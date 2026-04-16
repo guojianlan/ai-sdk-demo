@@ -4,16 +4,27 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:devtools": "devtools",
+    "dev:all": "next dev & devtools",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@ai-sdk/mcp": "^1.0.36",
+    "@ai-sdk/openai": "^3.0.52",
+    "@ai-sdk/openai-compatible": "^2.0.41",
+    "@ai-sdk/react": "^3.0.160",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vscode/ripgrep": "^1.17.1",
+    "ai": "^6.0.158",
     "next": "16.2.3",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@ai-sdk/devtools": "^0.0.15",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -21,6 +32,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
