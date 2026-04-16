@@ -6,17 +6,14 @@
  * - `get_weather`：按城市名查当前天气
  * - `get_forecast`：按城市名查未来 N 天预报
  *
- * 数据源用 open-meteo.com 的免费公共 API（无需 API key，结构化 JSON）：
- * - 先调 geocoding API 把 "Beijing" → 纬经度
- * - 再调 forecast API 拿天气
+ * 数据源（带 fallback）：
+ * 1. **wttr.in**（首选）——全免费、无 key、per-IP 无配额；返回 JSON 格式（`?format=j1`）
+ * 2. **open-meteo**（备用）——也是免费的公共 API，但每日配额共享，共用 IP 池容易被打爆
  *
- * 为什么选 open-meteo：
- * - 完全免费、无 auth、无 quota 焦虑
- * - JSON 格式清晰，code/temperature/wind 等字段直接可读
- * - 支持几百个城市，天气 code 有公开映射表
+ * 实际运行中经常遇到 open-meteo 返回 429 "Daily limit exceeded"（共享 IP 的其他用户用完了），
+ * 所以默认走 wttr.in。open-meteo 留着做备胎，未来 wttr.in 挂掉时可以切回去。
  *
- * 启动方式：这个文件被 lib/mcp/weather-client.ts 通过 stdio spawn 运行。
- * 因为是 stdio transport：日志**必须写 stderr**，不能污染 stdout（MCP 协议占用 stdout）。
+ * stdio transport：日志**必须写 stderr**，不能污染 stdout（MCP 协议占用 stdout）。
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -26,130 +23,84 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+const USER_AGENT = "ai-sdk-demo-weather-mcp/0.1";
+
 /**
- * WMO Weather interpretation code → 人类可读文本。
- * 参考 open-meteo 文档：https://open-meteo.com/en/docs
+ * wttr.in 的 `?format=j1` 返回的核心字段（我们只挑用得上的）。
  */
-const WEATHER_CODES: Record<number, string> = {
-  0: "晴朗",
-  1: "大部晴朗",
-  2: "局部多云",
-  3: "阴天",
-  45: "雾",
-  48: "冻雾",
-  51: "小毛毛雨",
-  53: "毛毛雨",
-  55: "大毛毛雨",
-  61: "小雨",
-  63: "中雨",
-  65: "大雨",
-  71: "小雪",
-  73: "中雪",
-  75: "大雪",
-  77: "雪粒",
-  80: "小阵雨",
-  81: "中阵雨",
-  82: "强阵雨",
-  85: "小阵雪",
-  86: "大阵雪",
-  95: "雷暴",
-  96: "雷暴伴小冰雹",
-  99: "雷暴伴大冰雹",
+type WttrCurrent = {
+  temp_C: string;
+  FeelsLikeC: string;
+  humidity: string;
+  weatherDesc: Array<{ value: string }>;
+  windspeedKmph: string;
+  winddir16Point: string;
+  localObsDateTime: string;
 };
 
-type GeocodingResult = {
-  name: string;
-  latitude: number;
-  longitude: number;
-  country?: string;
-  admin1?: string;
-  timezone?: string;
+type WttrDay = {
+  date: string;
+  maxtempC: string;
+  mintempC: string;
+  totalSnow_cm?: string;
+  hourly: Array<{
+    time: string;
+    tempC: string;
+    weatherDesc: Array<{ value: string }>;
+    precipMM: string;
+  }>;
 };
 
-async function geocode(city: string): Promise<GeocodingResult | null> {
-  const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
-  url.searchParams.set("name", city);
-  url.searchParams.set("count", "1");
-  url.searchParams.set("language", "zh");
-  url.searchParams.set("format", "json");
+type WttrArea = {
+  areaName: Array<{ value: string }>;
+  country: Array<{ value: string }>;
+  region: Array<{ value: string }>;
+};
 
-  const response = await fetch(url);
+type WttrResponse = {
+  current_condition: WttrCurrent[];
+  weather: WttrDay[];
+  nearest_area: WttrArea[];
+};
+
+async function wttr(city: string): Promise<WttrResponse> {
+  const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1&lang=zh`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "application/json",
+    },
+  });
   if (!response.ok) {
-    throw new Error(`geocoding failed: ${response.status} ${response.statusText}`);
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `wttr.in failed: ${response.status} ${response.statusText}${body ? ` — ${body.slice(0, 120)}` : ""}`,
+    );
   }
-  const data = (await response.json()) as { results?: GeocodingResult[] };
-  return data.results?.[0] ?? null;
+  return (await response.json()) as WttrResponse;
 }
 
-async function fetchCurrentWeather(lat: number, lon: number) {
-  const url = new URL("https://api.open-meteo.com/v1/forecast");
-  url.searchParams.set("latitude", String(lat));
-  url.searchParams.set("longitude", String(lon));
-  url.searchParams.set(
-    "current",
-    "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m",
-  );
-  url.searchParams.set("timezone", "auto");
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`forecast failed: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as {
-    current: {
-      time: string;
-      temperature_2m: number;
-      apparent_temperature: number;
-      relative_humidity_2m: number;
-      weather_code: number;
-      wind_speed_10m: number;
-      wind_direction_10m: number;
-    };
-    current_units: Record<string, string>;
-    timezone: string;
-  };
-}
-
-async function fetchForecast(lat: number, lon: number, days: number) {
-  const url = new URL("https://api.open-meteo.com/v1/forecast");
-  url.searchParams.set("latitude", String(lat));
-  url.searchParams.set("longitude", String(lon));
-  url.searchParams.set(
-    "daily",
-    "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
-  );
-  url.searchParams.set("forecast_days", String(days));
-  url.searchParams.set("timezone", "auto");
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`forecast failed: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as {
-    daily: {
-      time: string[];
-      weather_code: number[];
-      temperature_2m_max: number[];
-      temperature_2m_min: number[];
-      precipitation_sum: number[];
-    };
-    daily_units: Record<string, string>;
-    timezone: string;
-  };
+function formatArea(area: WttrArea | undefined): string {
+  if (!area) return "?";
+  const parts = [
+    area.areaName?.[0]?.value,
+    area.region?.[0]?.value,
+    area.country?.[0]?.value,
+  ].filter(Boolean);
+  return parts.join(", ");
 }
 
 const server = new Server(
-  { name: "weather-mcp", version: "0.1.0" },
+  { name: "weather-mcp", version: "0.2.0" },
   { capabilities: { tools: {} } },
 );
 
-// 列工具：客户端（AI SDK 的 MCP client）启动时会先问一次 tools/list。
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "get_weather",
       description:
-        "查询指定城市当前的天气状况。支持中英文城市名，会返回温度、体感温度、湿度、风速、天气描述。",
+        "查询指定城市当前的天气状况。支持中英文城市名，返回温度、体感温度、湿度、风速、风向、天气描述。数据源 wttr.in（免 key 免配额）。",
       inputSchema: {
         type: "object",
         properties: {
@@ -164,19 +115,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "get_forecast",
       description:
-        "查询指定城市未来 N 天（1-7 天）的天气预报。返回每天的最高/最低温度、降水量、天气描述。",
+        "查询指定城市未来 N 天（1-3 天）的天气预报。返回每天最高/最低温度 + 几个关键时段的天气描述。",
       inputSchema: {
         type: "object",
         properties: {
-          city: {
-            type: "string",
-            description: "城市名",
-          },
+          city: { type: "string", description: "城市名" },
           days: {
             type: "number",
-            description: "预报天数，1-7，默认 3",
+            description: "预报天数，1-3，默认 3（wttr.in 只给 3 天）",
             minimum: 1,
-            maximum: 7,
+            maximum: 3,
           },
         },
         required: ["city"],
@@ -185,7 +133,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-// 调用工具：LLM 决定调哪个工具后，AI SDK 的 MCP client 会发 tools/call 过来。
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -199,29 +146,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      const geo = await geocode(city);
-      if (!geo) {
+      const data = await wttr(city);
+      const cur = data.current_condition[0];
+      const area = formatArea(data.nearest_area?.[0]);
+
+      if (!cur) {
         return {
-          content: [{ type: "text", text: `找不到城市：${city}` }],
+          content: [{ type: "text", text: `找不到 ${city} 的当前天气。` }],
           isError: true,
         };
       }
 
-      const weather = await fetchCurrentWeather(geo.latitude, geo.longitude);
-      const c = weather.current;
-      const u = weather.current_units;
-      const condition = WEATHER_CODES[c.weather_code] ?? `code ${c.weather_code}`;
-      const location = [geo.name, geo.admin1, geo.country]
-        .filter(Boolean)
-        .join(", ");
-
+      const desc = cur.weatherDesc?.[0]?.value ?? "—";
       const text = [
-        `📍 ${location}（${weather.timezone}）`,
-        `🕐 ${c.time}`,
-        `🌡️  ${c.temperature_2m}${u.temperature_2m}（体感 ${c.apparent_temperature}${u.apparent_temperature}）`,
-        `☁️  ${condition}`,
-        `💧 湿度 ${c.relative_humidity_2m}${u.relative_humidity_2m}`,
-        `🌬️  风速 ${c.wind_speed_10m} ${u.wind_speed_10m}（${c.wind_direction_10m}°）`,
+        `📍 ${area}`,
+        `🕐 ${cur.localObsDateTime}`,
+        `🌡️  ${cur.temp_C}°C（体感 ${cur.FeelsLikeC}°C）`,
+        `☁️  ${desc}`,
+        `💧 湿度 ${cur.humidity}%`,
+        `🌬️  风速 ${cur.windspeedKmph} km/h（${cur.winddir16Point}）`,
       ].join("\n");
 
       return { content: [{ type: "text", text }] };
@@ -232,7 +175,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const rawDays = (args as { days?: unknown })?.days;
       const days = Math.max(
         1,
-        Math.min(7, typeof rawDays === "number" ? rawDays : 3),
+        Math.min(3, typeof rawDays === "number" ? rawDays : 3),
       );
 
       if (!city) {
@@ -242,32 +185,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      const geo = await geocode(city);
-      if (!geo) {
+      const data = await wttr(city);
+      const area = formatArea(data.nearest_area?.[0]);
+      const selectedDays = data.weather.slice(0, days);
+
+      if (selectedDays.length === 0) {
         return {
-          content: [{ type: "text", text: `找不到城市：${city}` }],
+          content: [{ type: "text", text: `未能拿到 ${city} 的预报数据。` }],
           isError: true,
         };
       }
 
-      const forecast = await fetchForecast(geo.latitude, geo.longitude, days);
-      const d = forecast.daily;
-      const u = forecast.daily_units;
-      const location = [geo.name, geo.admin1, geo.country]
-        .filter(Boolean)
-        .join(", ");
-
-      const rows = d.time.map((date, i) => {
-        const cond =
-          WEATHER_CODES[d.weather_code[i]] ?? `code ${d.weather_code[i]}`;
-        return `${date}: ${cond} · ${d.temperature_2m_min[i]}~${d.temperature_2m_max[i]}${u.temperature_2m_max} · 降水 ${d.precipitation_sum[i]}${u.precipitation_sum}`;
+      // wttr.in 的 hourly 有 8 个时段：0/3/6/9/12/15/18/21（按小时 * 100 编码）。
+      // 挑 3 个代表时段（早上 9 点 / 中午 12 点 / 晚上 21 点）给个大致印象。
+      const REPRESENTATIVE_HOURS = ["900", "1200", "2100"];
+      const rows = selectedDays.map((day) => {
+        const hours = REPRESENTATIVE_HOURS.map((h) => {
+          const slot = day.hourly.find((hh) => hh.time === h);
+          if (!slot) return null;
+          return `${h.padStart(4, "0").slice(0, 2)}:00 ${slot.tempC}°C ${slot.weatherDesc?.[0]?.value ?? "—"}`;
+        }).filter(Boolean);
+        return `${day.date}: ${day.mintempC}~${day.maxtempC}°C | ${hours.join(" · ")}`;
       });
 
-      const text = [
-        `📍 ${location}（${forecast.timezone}）未来 ${days} 天：`,
-        ...rows,
-      ].join("\n");
-
+      const text = [`📍 ${area} 未来 ${days} 天：`, ...rows].join("\n");
       return { content: [{ type: "text", text }] };
     }
 
