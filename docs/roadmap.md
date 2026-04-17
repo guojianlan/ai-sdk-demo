@@ -18,7 +18,8 @@
 | **P2-a** | Subagents | ✅ done | explorer 子 agent + `explore_workspace` 工具；顺手把 search_code 切到 @vscode/ripgrep 免装 rg |
 | **P2-b** | Structured output（`streamObject`） | ✅ done | `/api/plan` 用 `streamObject`；前端 `experimental_useObject` 流式渲染 plan 卡；接受后作为 prefix 注入到下一条 user message |
 | **P2-c** | Middleware + Telemetry | ✅ done | 自写 logging middleware（stdout 单行结构化）；和 devtools middleware 叠加；rate-limit 跳过（日常没需求） |
-| **P3-a** | MCP 工具接入 | ✅ done | 自写 weather MCP server（stdio + open-meteo）；主 app 用 `@ai-sdk/mcp` 每请求 spawn + `onFinish` 清理 |
+| **P3-a** | MCP 工具接入 | ✅ done | 自写 weather MCP server（stdio + wttr.in）；主 app 用 `@ai-sdk/mcp` 每请求 spawn + `onFinish` 清理 |
+| **P3-R** | **生产级重构** | ⬜ pending | **新增**：抽取 chat-agent builder；统一 env / 消息清洗 / tool 结果 shape；消除 `as any` 逃生口 |
 | **P3-b** | Message 持久化 + resume streams | ⬜ pending | — |
 | **P4-a** | Testing + 模拟模型 | ⬜ pending | — |
 | **P4-b** | Context compaction | ⬜ pending | 依赖 P2-c + P3-b |
@@ -211,6 +212,32 @@ npm run dev:all
 **Done 标准**：启动时 agent 自动发现 MCP server 的工具，在 tool 卡片里看到 `mcp-*` 前缀的调用。
 
 **预估**：1 天。
+
+---
+
+### P3-R：生产级重构（新增）
+
+**Status**: ⬜ pending · **定稿 2026-04-17**
+
+**价值**：P1-a 到 P3-a 跑了一轮从零到功能全覆盖，积累了大量快速迭代产物。在继续加 feature 之前回头整一轮，把"一次性代码"收敛成可维护的生产级架构。
+
+**重构清单（按执行顺序）**：
+
+- [ ] **1. 统一 env 配置**：新建 `lib/env.ts`，集中所有 env 读取 + 启动期校验（缺必填 → 直接 crash），替代散落在 `lib/gateway.ts` / `lib/devtools.ts` / 实验路由 / `lib/middleware/logging.ts` 里的零散读取
+- [ ] **2. 统一消息清洗**：合并 `sanitizeWorkspaceUIMessages`（主路由）与 `sanitizeExperimentUIMessages`（实验路由）为一个参数化的 `lib/chat/sanitize-messages.ts`，两条路由共用
+- [ ] **3. 抽取 chat-agent builder**：把"persona → developer rules → session primer → prompt layers → ToolLoopAgent 构造"这条在两个路由里重复 60%+ 的 pipeline 抽成 `lib/chat-agent/builder.ts`；两条路由文件 < 80 行（现在各 ~330）
+- [ ] **4. prompt 分层合并**：`assemblePromptLayers` + `buildSessionPrimer` + persona 字符串 + developer rules 字符串 → 合成 `buildSystemPrompt(persona, modeConfig, workspace)` 单一入口
+- [ ] **5. 工具结果 shape 统一**：定义 `type ToolResult<T> = { ok: true; data: T } | { ok: false; error: string }`；所有 tool 的 execute 收敛到这个 shape（现在 write_file 用 `{ok,error}` 而 read_file 直接 throw、shell 用 `{success, exitCode}`）
+- [ ] **6. 消除类型逃生口**：搜索全 app 的 `as any` / `as never` / `as ToolSet`，用正确的泛型或 discriminated union 替代
+
+**Done 标准**：
+1. 两条 chat 路由文件各 < 80 行
+2. `lib/env.ts` 启动期缺必填就 crash
+3. 全 app 无 `as any` / `as never`（除注释说明不可避免的场景）
+4. 所有 tool 返回 `ToolResult<T>` 联合
+5. `npm run build` 通过 + 现有功能（approval / bypass / subagent / MCP weather / plan）全部不回归
+
+**预估**：1 天（纯重构，不加 feature）。
 
 ---
 
