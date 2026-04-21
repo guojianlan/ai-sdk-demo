@@ -3,7 +3,11 @@
  * 每个已知工具写一个专门的渲染器，摆脱 `JSON.stringify` 把字符串里 `\n`
  * 转义成 `\\n` 的问题；未知工具落回通用 JSON 兜底。
  *
- * `summarizeToolOutput` 给 ToolPartCard 的折叠 summary 那一行使用。
+ * 自家 tool 统一返回 ToolResult<T> = `{ok: true, data: T} | {ok: false, error: string}`；
+ * 本文件先做 `unwrapToolResult`，失败走统一的错误视图，成功再分发到每个工具的 view。
+ *
+ * `summarizeToolOutput` 给 ToolPartCard 的折叠 summary 那一行使用，
+ * 自家 tool 从 `.data` 里取字段。MCP / 未知 tool 没有这一层 wrapper，直接读顶层。
  */
 
 function formatBytes(n: number | undefined): string {
@@ -19,15 +23,51 @@ function formatBytes(n: number | undefined): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+type UnwrapResult =
+  | { kind: "ok"; data: Record<string, unknown> }
+  | { kind: "err"; error: string }
+  | { kind: "raw"; raw: Record<string, unknown> };
+
+/**
+ * 把 tool output 解成 ok/err/raw 三态：
+ * - ok：自家 tool 成功返回（带 data）
+ * - err：自家 tool 失败返回（带 error 字符串）
+ * - raw：MCP / 未知 tool 返回的裸对象，交给兜底 renderer
+ */
+function unwrapToolResult(output: unknown): UnwrapResult {
+  if (!output || typeof output !== "object") {
+    return { kind: "raw", raw: {} };
+  }
+
+  const o = output as Record<string, unknown>;
+
+  if (o.ok === true && "data" in o && typeof o.data === "object" && o.data !== null) {
+    return { kind: "ok", data: o.data as Record<string, unknown> };
+  }
+
+  if (o.ok === false && typeof o.error === "string") {
+    return { kind: "err", error: o.error };
+  }
+
+  return { kind: "raw", raw: o };
+}
+
+function truncateForSummary(text: string, max = 80): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
 /**
  * 把工具执行结果压成一行摘要，显示在 `<details>` 的 summary 条上。
  */
 export function summarizeToolOutput(toolName: string, output: unknown): string {
-  if (!output || typeof output !== "object") {
-    return "";
+  const unwrapped = unwrapToolResult(output);
+
+  if (unwrapped.kind === "err") {
+    return truncateForSummary(unwrapped.error);
   }
 
-  const o = output as Record<string, unknown>;
+  const o = unwrapped.kind === "ok" ? unwrapped.data : unwrapped.raw;
 
   if (toolName === "read_file") {
     const p = typeof o.path === "string" ? o.path : "?";
@@ -59,9 +99,6 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
   }
 
   if (toolName === "edit_file") {
-    if (o.ok === false && typeof o.error === "string") {
-      return o.error.slice(0, 80);
-    }
     const p = typeof o.path === "string" ? o.path : "?";
     const added = typeof o.addedLines === "number" ? o.addedLines : 0;
     const removed = typeof o.removedLines === "number" ? o.removedLines : 0;
@@ -70,9 +107,6 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
   }
 
   if (toolName === "explore_workspace") {
-    if (o.ok === false && typeof o.error === "string") {
-      return o.error.slice(0, 80);
-    }
     const steps = typeof o.stepsUsed === "number" ? `${o.stepsUsed} steps` : "";
     const files = Array.isArray(o.filesExamined)
       ? `${o.filesExamined.length} files`
@@ -81,6 +115,14 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
   }
 
   return "";
+}
+
+function ToolErrorView({ message }: { message: string }) {
+  return (
+    <div className="px-3 py-2.5 font-mono text-[12px] leading-6 text-rose-800 whitespace-pre-wrap">
+      {message}
+    </div>
+  );
 }
 
 function ReadFileOutputView({
@@ -236,8 +278,6 @@ function WriteResultView({
   output,
 }: {
   output: {
-    ok?: boolean;
-    error?: string;
     path?: string;
     operation?: string;
     bytesWritten?: number;
@@ -245,13 +285,6 @@ function WriteResultView({
     previousLines?: number;
   };
 }) {
-  if (output.ok === false) {
-    return (
-      <div className="px-3 py-2.5 font-mono text-[12px] leading-6 text-rose-800">
-        {output.error ?? "write failed"}
-      </div>
-    );
-  }
   const op = output.operation ?? "wrote";
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 py-2.5 font-mono text-[12px] text-slate-700">
@@ -273,9 +306,6 @@ function EditResultView({
   output,
 }: {
   output: {
-    ok?: boolean;
-    error?: string;
-    occurrences?: number;
     path?: string;
     replacements?: number;
     startLine?: number;
@@ -283,18 +313,6 @@ function EditResultView({
     removedLines?: number;
   };
 }) {
-  if (output.ok === false) {
-    return (
-      <div className="px-3 py-2.5 font-mono text-[12px] leading-6 text-rose-800">
-        {output.error ?? "edit failed"}
-        {typeof output.occurrences === "number" && (
-          <span className="ml-2 text-rose-600">
-            (occurrences: {output.occurrences})
-          </span>
-        )}
-      </div>
-    );
-  }
   const added = output.addedLines ?? 0;
   const removed = output.removedLines ?? 0;
   return (
@@ -318,21 +336,11 @@ function ExploreWorkspaceOutputView({
   output,
 }: {
   output: {
-    ok?: boolean;
-    error?: string;
     summary?: string;
     filesExamined?: string[];
     stepsUsed?: number;
   };
 }) {
-  if (output.ok === false) {
-    return (
-      <div className="px-3 py-2.5 font-mono text-[12px] leading-6 text-rose-800">
-        {output.error ?? "explorer failed"}
-      </div>
-    );
-  }
-
   const files = Array.isArray(output.filesExamined) ? output.filesExamined : [];
 
   return (
@@ -377,35 +385,52 @@ function ExploreWorkspaceOutputView({
   );
 }
 
+function renderKnownOutput(
+  toolName: string,
+  data: Record<string, unknown>,
+): React.ReactNode | null {
+  if (toolName === "read_file") {
+    return <ReadFileOutputView output={data} />;
+  }
+  if (toolName === "list_files") {
+    return <ListFilesOutputView output={data} />;
+  }
+  if (toolName === "search_code") {
+    return <SearchCodeOutputView output={data} />;
+  }
+  if (toolName === "write_file") {
+    return <WriteResultView output={data} />;
+  }
+  if (toolName === "edit_file") {
+    return <EditResultView output={data} />;
+  }
+  if (toolName === "explore_workspace") {
+    return <ExploreWorkspaceOutputView output={data} />;
+  }
+  return null;
+}
+
 /**
- * 工具执行结果的分发器：按工具名挑一个最合适的视图渲染。
+ * 工具执行结果的分发器：
+ * 1. unwrap ToolResult — 失败走统一 ErrorView，成功把 data 传下去；
+ * 2. 没有 ok 标志的（MCP / 未知 tool）直接按 raw 对象分发 / JSON 兜底。
  */
 export function renderToolOutput(
   toolName: string,
   output: unknown,
 ): React.ReactNode {
-  const o = (output ?? {}) as Record<string, unknown>;
+  const unwrapped = unwrapToolResult(output);
 
-  if (toolName === "read_file") {
-    return <ReadFileOutputView output={o} />;
-  }
-  if (toolName === "list_files") {
-    return <ListFilesOutputView output={o} />;
-  }
-  if (toolName === "search_code") {
-    return <SearchCodeOutputView output={o} />;
-  }
-  if (toolName === "write_file") {
-    return <WriteResultView output={o} />;
-  }
-  if (toolName === "edit_file") {
-    return <EditResultView output={o} />;
-  }
-  if (toolName === "explore_workspace") {
-    return <ExploreWorkspaceOutputView output={o} />;
+  if (unwrapped.kind === "err") {
+    return <ToolErrorView message={unwrapped.error} />;
   }
 
-  // 未知工具走兜底 JSON 显示。
+  const payload = unwrapped.kind === "ok" ? unwrapped.data : unwrapped.raw;
+  const known = renderKnownOutput(toolName, payload);
+  if (known) {
+    return known;
+  }
+
   return (
     <pre className="max-h-64 overflow-auto bg-white p-3 font-mono text-[11px] leading-5 text-slate-700">
       {JSON.stringify(output ?? {}, null, 2)}

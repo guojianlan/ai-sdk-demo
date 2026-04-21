@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+
+import { env } from "@/lib/env";
 
 /**
  * Session primer —— 会话启动时塞给模型的"入场简报"。
@@ -75,12 +76,7 @@ function currentDateIso() {
 }
 
 function detectShell() {
-  const raw = process.env.SHELL;
-  if (raw) {
-    return path.basename(raw);
-  }
-  // Windows 没有 $SHELL，降级到 platform 名
-  return os.platform() === "win32" ? "cmd" : "sh";
+  return env.shellName;
 }
 
 function detectTimezone() {

@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+import { toolErr, toolOk } from "@/lib/tool-result";
 import {
   listWorkspaceEntries,
   readWorkspaceFile,
@@ -84,17 +85,17 @@ export const workspaceToolset = {
     }),
     execute: async ({ depth, limit, relativePath }, { experimental_context }) => {
       const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
-
-      return {
-        workspaceRoot,
-        relativePath,
-        entries: await listWorkspaceEntries(
+      try {
+        const entries = await listWorkspaceEntries(
           workspaceRoot,
           relativePath,
           depth,
           limit,
-        ),
-      };
+        );
+        return toolOk({ workspaceRoot, relativePath, entries });
+      } catch (error) {
+        return toolErr(error);
+      }
     },
   }),
   search_code: tool({
@@ -116,12 +117,17 @@ export const workspaceToolset = {
     }),
     execute: async ({ glob, maxResults, query }, { experimental_context }) => {
       const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
-
-      return {
-        workspaceRoot,
-        query,
-        matches: await searchWorkspace(workspaceRoot, query, maxResults, glob),
-      };
+      try {
+        const matches = await searchWorkspace(
+          workspaceRoot,
+          query,
+          maxResults,
+          glob,
+        );
+        return toolOk({ workspaceRoot, query, matches });
+      } catch (error) {
+        return toolErr(error);
+      }
     },
   }),
   read_file: tool({
@@ -142,8 +148,16 @@ export const workspaceToolset = {
     }),
     execute: async ({ maxChars, relativePath }, { experimental_context }) => {
       const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
-
-      return await readWorkspaceFile(workspaceRoot, relativePath, maxChars);
+      try {
+        const file = await readWorkspaceFile(
+          workspaceRoot,
+          relativePath,
+          maxChars,
+        );
+        return toolOk(file);
+      } catch (error) {
+        return toolErr(error);
+      }
     },
   }),
 };

@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 
 import { rgPath } from "@vscode/ripgrep";
 
+import { env } from "@/lib/env";
+
 const execFileAsync = promisify(execFile);
 
 // 大型生成目录和依赖目录通常噪声很多，也会拖慢遍历速度。
@@ -44,7 +46,7 @@ export type WorkspaceSearchResult = {
  * 这样可以枚举同级项目，而不用把机器相关路径写死在代码里。
  */
 export function getWorkspaceBaseDir() {
-  return process.env.WORKSPACE_BASE_DIR ?? path.resolve(process.cwd(), "..");
+  return env.workspaceBaseDir;
 }
 
 function getWorkspaceName(root: string) {

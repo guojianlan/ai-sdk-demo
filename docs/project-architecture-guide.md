@@ -4,7 +4,7 @@
 > 读完后你应该能回答 4 个问题：
 >
 > 1. 这个项目整体做了什么？
-> 2. 主页面、实验页面、Plan 模式分别怎么工作？
+> 2. 主聊天链路和 Plan 模式分别怎么工作？
 > 3. 哪些文件是关键节点？各自负责什么？
 > 4. 如果我要继续改这个项目，应该从哪里下手？
 
@@ -14,13 +14,12 @@
 
 这是一个基于 **Next.js 16 + Vercel AI SDK v6** 的本地 coding agent 实验仓库。
 
-它有三条核心能力：
+它有两条核心能力：
 
-- **主聊天链路**：让 Agent 读取选中的工作区，分析代码、搜索符号、读取文件，并在需要时发起带审批的写入。
-- **实验链路**：比较细粒度 `workspace-toolset` 和通用只读 `shell` tool 的差异。
+- **主聊天链路**：让 Agent 读取选中的工作区，分析代码、搜索符号、读取文件，并在需要时发起带审批的写入；可以调 `explore_workspace` 子 agent 做调查，也能接入 MCP 动态工具。
 - **Plan 链路**：在执行前先生成结构化计划，让用户 review / 编辑 / 勾选后再继续。
 
-所以它不是“普通聊天应用”，而是一个面向 **agent dev flow** 的原型仓库。
+所以它不是"普通聊天应用"，而是一个面向 **agent dev flow** 的原型仓库。
 
 ---
 
@@ -33,11 +32,10 @@ app/
   page.tsx                         主页：状态编排中心
   layout.tsx                       根布局与 metadata
   globals.css                      全局样式
-  localshell-lab/page.tsx          实验页面：tool 粒度对比台
   api/
-    chat/route.ts                  主聊天路由
-    chat-openai-experimental/route.ts
-                                   实验路由（workspace-toolset / shell / hybrid）
+    chat/
+      route.ts                     主聊天路由（请求处理 pipeline）
+      agent-config.ts              persona / rules / schema / agent factory
     plan/route.ts                  Plan 生成路由
     workspaces/route.ts            工作区列表接口
   _components/
@@ -51,25 +49,35 @@ app/
     tool-card/
       ToolPartCard.tsx             tool part 状态机 UI
       input-views.tsx              工具输入预览
-      output-views.tsx             工具输出渲染
+      output-views.tsx             工具输出渲染（unwrap ToolResult 后分发）
       types.ts                     tool part 共享类型
   _lib/
     chat-session.ts                会话类型、localStorage、标题推导等纯函数
 
 lib/
+  env.ts                           全仓 env 读取 + 启动期校验
+  gateway.ts                       OpenAI-compatible gateway 实例
   chat-access-mode.ts              workspace-tools / no-tools 模式定义
-  gateway.ts                       模型 gateway 配置
-  devtools.ts                      @ai-sdk/devtools 包装
+  chat-agent/
+    builder.ts                     createChatAgent 通用构造器
+    system-prompt.ts               buildSystemPrompt 单入口
+  chat/
+    sanitize-messages.ts           UI message 清洗（孤儿 tool part + metadata）
+  tool-result.ts                   ToolResult<T> + toolOk/toolErr helpers
+  devtools.ts                      @ai-sdk/devtools + logging middleware 包装
+  middleware/logging.ts            自写 stdout logging middleware
   prompt-layers.ts                 Persona / rules / context / AGENTS 分层拼接
   session-primer.ts                environment_context + AGENTS.md 收集
   workspace-tools.ts               list/search/read tool 定义
   workspaces.ts                    工作区边界、遍历、读文件、搜索
   write-tools.ts                   write_file / edit_file + approval
-  shell-tool.ts                    只读 shell function tool
   plan-schema.ts                   Plan 的共享 Zod schema
   plan-generator.ts                streamObject 生成结构化计划
-  subagents/
-    explorer.ts                    只读 explorer 子 agent
+  subagents/explorer.ts            只读 explorer 子 agent
+  mcp/weather-client.ts            @ai-sdk/mcp stdio client
+
+mcp-servers/
+  weather/server.ts                自写 weather MCP server
 
 docs/
   roadmap.md                       项目路线图
@@ -78,7 +86,6 @@ docs/
 
 examples/
   chat-access-modes.ts             主聊天接口请求示例
-  openai-experimental-route.ts     实验接口请求示例
 ```
 
 ---
@@ -111,21 +118,7 @@ examples/
 
 而具体 UI 细节已经拆进了 `app/_components/`。
 
-### 3.2 实验页面 `/localshell-lab`
-
-实验页面是一个 **tool 粒度对比台**，目的是比较：
-
-- `workspace-toolset`
-- `shell`
-- `hybrid`
-
-三种模式下，模型如何获取证据、调用什么工具、输出什么参数和结果。
-
-这条链路的重点不是“完成任务”，而是“观察 agent 行为”。
-
-对应文件是 [`app/localshell-lab/page.tsx`](../app/localshell-lab/page.tsx)。
-
-### 3.3 Plan 模式
+### 3.2 Plan 模式
 
 Plan 模式是当前仓库里相对独立的一条链路：
 
@@ -146,7 +139,7 @@ Plan 模式是当前仓库里相对独立的一条链路：
 
 ---
 
-## 4. 三条主流程怎么跑
+## 4. 两条主流程怎么跑
 
 ### 4.1 主聊天链路
 
@@ -161,17 +154,21 @@ useChat + DefaultChatTransport
   ↓
 POST /api/chat
   ↓
-createProjectEngineerAgent(...)
+createProjectEngineerAgent(...)    ← app/api/chat/agent-config.ts
+  ↓
+createChatAgent(...)                ← lib/chat-agent/builder.ts
   ↓
 prepareCall()
   ├─ normalizeWorkspaceRoot()
-  ├─ buildSessionPrimer()
-  └─ assemblePromptLayers()
+  └─ buildSystemPrompt()
+        ├─ buildSessionPrimer()
+        └─ assemblePromptLayers()
   ↓
 ToolLoopAgent + tools
   ├─ workspaceToolset
   ├─ writeToolset
-  └─ subagentToolset
+  ├─ subagentToolset
+  └─ weather MCP(动态)
   ↓
 createAgentUIStreamResponse()
   ↓
@@ -184,11 +181,15 @@ MessageBubble / ToolPartCard 渲染
 
 - 主编排：[`app/page.tsx`](../app/page.tsx)
 - 主路由：[`app/api/chat/route.ts`](../app/api/chat/route.ts)
+- agent 配置：[`app/api/chat/agent-config.ts`](../app/api/chat/agent-config.ts)
+- agent 构造器：[`lib/chat-agent/builder.ts`](../lib/chat-agent/builder.ts)
+- system prompt 入口：[`lib/chat-agent/system-prompt.ts`](../lib/chat-agent/system-prompt.ts)
 - prompt 分层：[`lib/prompt-layers.ts`](../lib/prompt-layers.ts)
 - 会话 primer：[`lib/session-primer.ts`](../lib/session-primer.ts)
 - 工作区工具：[`lib/workspace-tools.ts`](../lib/workspace-tools.ts)
 - 写入工具：[`lib/write-tools.ts`](../lib/write-tools.ts)
 - 子 agent：[`lib/subagents/explorer.ts`](../lib/subagents/explorer.ts)
+- MCP client：[`lib/mcp/weather-client.ts`](../lib/mcp/weather-client.ts)
 
 ### 这条链路的关键点
 
@@ -227,72 +228,14 @@ MessageBubble / ToolPartCard 渲染
 
 这使得 prompt 结构清晰，也便于调试和后续演化。
 
-#### 4. 主路由会清洗“悬空 tool parts”
+#### 4. 入站消息会被清洗
 
 如果用户在 tool 正执行一半时刷新页面，本地存储里可能残留半成品 `tool part`。
-`sanitizeWorkspaceUIMessages()` 会把非终结态的 tool part 丢掉，避免下次请求时 provider 因缺少 tool result 而报错。
+[`lib/chat/sanitize-messages.ts`](../lib/chat/sanitize-messages.ts) 的 `sanitizeChatUIMessages` 做两件事：把非终结态的 tool part 丢掉、清除 OpenAI Responses API 的 `*Metadata` 字段。避免下次请求时 provider 因缺少 tool result 或 item 引用失效而报错。
 
 ---
 
-### 4.2 实验链路
-
-### 流程图
-
-```text
-用户在 /localshell-lab 选择 toolMode
-  ↓
-POST /api/chat-openai-experimental
-  ↓
-pickTools(toolMode)
-  ├─ workspace-toolset
-  ├─ shell
-  └─ hybrid
-  ↓
-ToolLoopAgent
-  ↓
-createAgentUIStreamResponse()
-  ↓
-实验页直接展示 text / reasoning / tool input / tool output
-```
-
-### 关键代码节点
-
-- 页面：[`app/localshell-lab/page.tsx`](../app/localshell-lab/page.tsx)
-- 路由：[`app/api/chat-openai-experimental/route.ts`](../app/api/chat-openai-experimental/route.ts)
-- shell tool：[`lib/shell-tool.ts`](../lib/shell-tool.ts)
-
-### 这条链路的关键点
-
-#### 1. 它不是 OpenAI 的 built-in `local_shell`
-
-项目里用的是普通 `function calling` 路径上的自定义 `shell` 工具，而不是 Responses API 的内置 `local_shell`。
-
-这样做的好处是：
-
-- 不被单个 provider / 单个模型限制
-- GPT / Gemini / Claude 只要支持 function calling 都能用
-
-#### 2. shell 是只读白名单
-
-`lib/shell-tool.ts` 明确限制了：
-
-- 允许的命令
-- 允许的 git 子命令
-- 禁止的 shell 操作符
-
-它的定位是“证据采集工具”，不是通用终端。
-
-#### 3. 这条链路更适合做研究和调试
-
-实验页面会把 tool input/output 直接展开给你看，适合观察：
-
-- 模型是否更偏爱 shell 还是细粒度 tools
-- 参数组织是否稳定
-- 哪种工具证据链更直观
-
----
-
-### 4.3 Plan 链路
+### 4.2 Plan 链路
 
 ### 流程图
 
@@ -500,28 +443,34 @@ Plan 链路要的是严格结构化输出：
 ### 服务端入口
 
 - [`app/api/chat/route.ts`](../app/api/chat/route.ts)
-  - 主 Agent 入口
-- [`app/api/chat-openai-experimental/route.ts`](../app/api/chat-openai-experimental/route.ts)
-  - 实验 Agent 入口
+  - 主 Agent 入口（请求处理 pipeline）
+- [`app/api/chat/agent-config.ts`](../app/api/chat/agent-config.ts)
+  - persona / developer rules / schema / agent factory
 - [`app/api/plan/route.ts`](../app/api/plan/route.ts)
   - 结构化 plan 入口
 
 ### 底层能力
 
+- [`lib/env.ts`](../lib/env.ts)
+  - 全仓 env 读取 + 启动期校验
+- [`lib/chat-agent/builder.ts`](../lib/chat-agent/builder.ts)
+  - `createChatAgent` 通用构造器
+- [`lib/tool-result.ts`](../lib/tool-result.ts)
+  - `ToolResult<T>` + `toolOk` / `toolErr`
 - [`lib/workspaces.ts`](../lib/workspaces.ts)
   - 路径边界、读文件、列目录、搜索
 - [`lib/workspace-tools.ts`](../lib/workspace-tools.ts)
   - list/search/read tool
 - [`lib/write-tools.ts`](../lib/write-tools.ts)
   - write/edit tool + approval
-- [`lib/shell-tool.ts`](../lib/shell-tool.ts)
-  - 只读 shell 白名单
 - [`lib/session-primer.ts`](../lib/session-primer.ts)
   - `environment_context` + `AGENTS.md`
 - [`lib/prompt-layers.ts`](../lib/prompt-layers.ts)
   - prompt 分层拼接
 - [`lib/subagents/explorer.ts`](../lib/subagents/explorer.ts)
   - explorer 子 agent
+- [`lib/mcp/weather-client.ts`](../lib/mcp/weather-client.ts)
+  - MCP stdio client（weather server 拉起 + `tools()`）
 - [`lib/plan-generator.ts`](../lib/plan-generator.ts)
   - `streamObject` 生成结构化计划
 
@@ -551,14 +500,14 @@ Plan 链路要的是严格结构化输出：
 
 ### 第三轮：看扩展能力
 
-9. [`app/api/chat-openai-experimental/route.ts`](../app/api/chat-openai-experimental/route.ts)
-10. [`lib/shell-tool.ts`](../lib/shell-tool.ts)
-11. [`app/localshell-lab/page.tsx`](../app/localshell-lab/page.tsx)
-12. [`lib/subagents/explorer.ts`](../lib/subagents/explorer.ts)
-13. [`app/_components/PlanCard.tsx`](../app/_components/PlanCard.tsx)
-14. [`lib/plan-generator.ts`](../lib/plan-generator.ts)
+9. [`lib/chat-agent/builder.ts`](../lib/chat-agent/builder.ts) + [`lib/chat-agent/system-prompt.ts`](../lib/chat-agent/system-prompt.ts)
+10. [`lib/subagents/explorer.ts`](../lib/subagents/explorer.ts)
+11. [`lib/mcp/weather-client.ts`](../lib/mcp/weather-client.ts) + [`mcp-servers/weather/server.ts`](../mcp-servers/weather/server.ts)
+12. [`app/_components/PlanCard.tsx`](../app/_components/PlanCard.tsx)
+13. [`lib/plan-generator.ts`](../lib/plan-generator.ts)
+14. [`lib/tool-result.ts`](../lib/tool-result.ts) + [`lib/chat/sanitize-messages.ts`](../lib/chat/sanitize-messages.ts)
 
-这时你就能理解“实验链路、subagent、Plan 模式”这些增量能力。
+这时你就能理解"agent 构造抽象、subagent、MCP、Plan 模式"这些增量能力。
 
 ---
 
@@ -572,15 +521,16 @@ Plan 链路要的是严格结构化输出：
 - 如何给模型受控的代码访问能力
 - 如何把工作区、工具和安全边界绑定起来
 - 如何把 prompt 分层和项目规则注入做清楚
-- 如何把 tool 调用可视化
+- 如何把 tool 调用可视化、可审批
 - 如何在执行前引入 plan review
-- 如何比较不同工具抽象对 agent 行为的影响
+- 如何把 subagent 引入主对话而不污染上下文
+- 如何接入 MCP 动态工具并做好生命周期
 
-所以这个仓库最值得学习的不是 UI，而是它把“Agent 怎么接近真实开发工作流”这件事拆得很清楚。
+所以这个仓库最值得学习的不是 UI，而是它把"Agent 怎么接近真实开发工作流"这件事拆得很清楚。
 
 如果后面你还想继续往下挖，我建议下一份文档可以单独写：
 
-- “主聊天链路逐行讲解”
-- “Plan 模式实现细节”
-- “ToolPartCard 状态机说明”
-- “workspace-tools 与 shell 工具的差异”
+- "主聊天链路逐行讲解"
+- "Plan 模式实现细节"
+- "ToolPartCard 状态机说明"
+- "`createChatAgent` builder 设计复盘"

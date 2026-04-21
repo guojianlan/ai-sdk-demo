@@ -1,11 +1,8 @@
 "use client";
 
-import Link from "next/link";
-
 import { WORKSPACE_ACCESS_MODE_LABELS } from "@/lib/chat-access-mode";
 import {
   formatTimestamp,
-  getSessionPreview,
   type ChatSession,
   type WorkspaceOption,
 } from "@/app/_lib/chat-session";
@@ -13,7 +10,7 @@ import {
 import { Eyebrow } from "./Eyebrow";
 
 /**
- * 左侧的会话列表 + 工作区统计 + lab 入口。
+ * 左侧的会话列表 + 工作区统计。
  *
  * 所有交互以回调形式暴露给 Home：`onNewSession` / `onSelectSession`。
  * 自身不持有 state，是一个纯展示 + 事件转发组件。
@@ -67,30 +64,6 @@ export function SessionSidebar({
           新建
         </button>
       </div>
-
-      <Link
-        href="/localshell-lab"
-        className="mb-4 flex items-center justify-between rounded-md border border-slate-300 bg-white px-4 py-3 transition-colors duration-200 hover:border-slate-900 hover:bg-slate-50"
-      >
-        <span>
-          <Eyebrow>Lab</Eyebrow>
-          <span className="mt-1 block text-sm font-medium text-slate-900">
-            Tool 粒度对比台
-          </span>
-        </span>
-        <svg
-          viewBox="0 0 24 24"
-          className="h-4 w-4 text-slate-500"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M5 12h14M13 6l6 6-6 6" />
-        </svg>
-      </Link>
 
       <div className="mb-4 rounded-md border border-slate-300 bg-white p-4">
         <div className="flex items-baseline justify-between">
@@ -187,7 +160,7 @@ export function SessionSidebar({
                 )}
               </div>
               <div className="mt-2 line-clamp-2 text-[13px] leading-6 text-slate-600">
-                {getSessionPreview(session.messages)}
+                {session.preview || "先选择工作区，再开始提问。"}
               </div>
             </button>
           );

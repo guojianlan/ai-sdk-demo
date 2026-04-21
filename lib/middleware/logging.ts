@@ -4,6 +4,8 @@ import type {
   LanguageModelV3Usage,
 } from "@ai-sdk/provider";
 
+import { env } from "@/lib/env";
+
 /**
  * Logging middleware —— 自写一个，对应 roadmap P2-c 的学习目标。
  *
@@ -98,9 +100,10 @@ function countToolCallsInContent(content: unknown): number {
  * 生产部署时应关闭——日志吃 I/O 还可能把敏感 prompt 片段打到日志里。
  */
 function isEnabled(): boolean {
-  if (process.env.AI_SDK_LOGGING === "false") return false;
-  if (process.env.AI_SDK_LOGGING === "true") return true;
-  return process.env.NODE_ENV !== "production";
+  if (env.aiSdkLoggingExplicit !== undefined) {
+    return env.aiSdkLoggingExplicit;
+  }
+  return !env.isProduction;
 }
 
 export function loggingMiddleware(): LanguageModelV3Middleware {

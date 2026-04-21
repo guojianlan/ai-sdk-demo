@@ -2,6 +2,7 @@ import { wrapLanguageModel } from "ai";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 
+import { env } from "@/lib/env";
 import { loggingMiddleware } from "@/lib/middleware/logging";
 
 /**
@@ -14,7 +15,7 @@ import { loggingMiddleware } from "@/lib/middleware/logging";
  * 两者关注点正交：logging 给"终端里瞄一眼"，devtools 给"Web UI 里翻详情"，
  * 不冲突，可以同时开。都受 `NODE_ENV !== "production"` 门控。
  */
-const enabled = process.env.NODE_ENV !== "production";
+const enabled = !env.isProduction;
 
 export function instrumentModel(model: LanguageModelV3): LanguageModelV3 {
   if (!enabled) {

@@ -43,3 +43,6 @@ tmp
 
 # @ai-sdk/devtools local capture directory
 .devtools/
+
+# local SQLite store for persisted chat messages (P3-b)
+/.data/

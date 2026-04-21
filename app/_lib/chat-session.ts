@@ -8,8 +8,11 @@ import {
 
 /**
  * 主页 chat UI 用到的客户端类型、常量和 localStorage 相关的纯函数。
- * 抽出来独立一个文件，page.tsx 和各个子组件都可以按需 import，不用把这些
- * 散落在大文件里。
+ * 抽出来独立一个文件，page.tsx 和各个子组件都可以按需 import。
+ *
+ * ⚠ P3-b 后 `ChatSession` 不再携带 `messages`：消息存在服务端 SQLite，
+ * 页面挂载/切 session 时用 `GET /api/chat/history?id=<sessionId>` 拉回来。
+ * localStorage 里只留 session 元数据 + 一个派生 `preview` 字段给侧栏展示。
  */
 
 export type WorkspaceOption = {
@@ -22,6 +25,8 @@ export type WorkspaceOption = {
 export type ChatSession = {
   id: string;
   title: string;
+  /** 最后一条消息的文本前缀，单独持久化一份用于侧栏预览（不再保存完整 messages）。 */
+  preview: string;
   createdAt: string;
   updatedAt: string;
   workspaceRoot: string;
@@ -32,7 +37,6 @@ export type ChatSession = {
    * Agent 直接执行不弹确认。默认 false（安全态）。
    */
   bypassPermissions: boolean;
-  messages: UIMessage[];
 };
 
 export const STORAGE_KEY = "ai-sdk-demo.chat-sessions";
@@ -61,13 +65,13 @@ export function createSession(
   return {
     id: crypto.randomUUID(),
     title: "新对话",
+    preview: "",
     createdAt: now,
     updatedAt: now,
     workspaceRoot: workspace?.root ?? "",
     workspaceName: workspace?.name ?? "",
     workspaceAccessMode,
     bypassPermissions,
-    messages: [],
   };
 }
 
@@ -78,19 +82,17 @@ export function sanitizeSessions(input: unknown): ChatSession[] {
 
   const sessions = input
     .map((item) => {
-      const session = item as Partial<ChatSession>;
+      const session = item as Partial<ChatSession> & { messages?: unknown };
 
-      if (
-        typeof session?.id !== "string" ||
-        typeof session?.title !== "string" ||
-        !Array.isArray(session?.messages)
-      ) {
+      if (typeof session?.id !== "string" || typeof session?.title !== "string") {
         return null;
       }
 
       return {
         id: session.id,
         title: session.title || "新对话",
+        // 旧 snapshot 里 preview 可能不存在；没有就置空，下次消息进来会自动回填。
+        preview: typeof session.preview === "string" ? session.preview : "",
         createdAt:
           typeof session.createdAt === "string" && session.createdAt
             ? session.createdAt
@@ -108,7 +110,6 @@ export function sanitizeSessions(input: unknown): ChatSession[] {
         ),
         // 旧快照里没有 bypassPermissions，缺省一律按 false 处理（安全态）。
         bypassPermissions: session.bypassPermissions === true,
-        messages: session.messages as UIMessage[],
       } satisfies ChatSession;
     })
     .filter((session): session is ChatSession => session !== null);
@@ -139,12 +140,12 @@ export function deriveSessionTitle(messages: UIMessage[]): string {
   return rawTitle.length > 24 ? `${rawTitle.slice(0, 24)}...` : rawTitle;
 }
 
-export function getSessionPreview(messages: UIMessage[]): string {
+export function deriveSessionPreview(messages: UIMessage[]): string {
   const lastTextMessage = [...messages]
     .reverse()
     .find((message) => extractMessageText(message));
 
-  return extractMessageText(lastTextMessage) || "先选择工作区，再开始提问。";
+  return extractMessageText(lastTextMessage);
 }
 
 export function formatTimestamp(value: string): string {

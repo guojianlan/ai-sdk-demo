@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { tool } from "ai";
 import { z } from "zod";
 
+import { approvedTool } from "@/lib/tool-helpers";
+import { toolErr, toolOk } from "@/lib/tool-result";
 import { resolveWorkspacePath } from "@/lib/workspaces";
 import {
   getBypassPermissions,
@@ -11,28 +12,14 @@ import {
 } from "@/lib/workspace-tools";
 
 /**
- * 批准策略回调：
- * - `bypassPermissions === true` → 返回 false → 不需要用户确认，直接执行
- * - 其它情况（包括 undefined） → 返回 true → 弹 approval 卡片
- *
- * 这是一个简单的全局开关。未来想做"条件式批准"——比如只对
- * `node_modules/` / `.git/` 下的写入强制要求批准——可以在这里叠加更多判断。
- */
-async function requireApprovalUnlessBypassed(
-  _input: unknown,
-  { experimental_context }: { experimental_context?: unknown },
-) {
-  return !getBypassPermissions(experimental_context);
-}
-
-/**
  * 写入工具的设计目标：
- * - 所有改动都通过 `needsApproval` 让用户在 UI 上亲自点同意。
+ * - 所有改动都通过 approval 机制让用户在 UI 上亲自点同意。
  * - 路径解析统一复用 `resolveWorkspacePath`，拒绝任何 ".." 逃逸。
  * - Zod 描述文案强调"先读后改"，降低模型误改的概率。
  *
- * 注意：两个工具的 execute 只会在用户点"同意"之后才会被触发，
- * 因此里面不做额外的审批判断，而是把判断完全交给 AI SDK 的 approval 机制。
+ * 实现细节：两个工具都走 `approvedTool`（见 lib/tool-helpers.ts），
+ * `needsApproval` 的语义是"除非会话开了 bypassPermissions，否则一律要弹卡"。
+ * execute 只在用户点同意之后才会跑，里面不用重复做审批判断。
  */
 
 const writeFileInputSchema = z.object({
@@ -108,7 +95,7 @@ async function readFileIfExists(absolutePath: string) {
   }
 }
 
-export const writeFileTool = tool({
+export const writeFileTool = approvedTool({
   description: [
     "Write UTF-8 content to a workspace file. Overwrites the file entirely if it exists; creates it (with parent directories) otherwise.",
     "",
@@ -128,30 +115,32 @@ export const writeFileTool = tool({
     "- The user must approve every write in the UI; state your `reason` clearly.",
   ].join("\n"),
   inputSchema: writeFileInputSchema,
-  needsApproval: requireApprovalUnlessBypassed,
-  execute: async (
-    { content, relativePath },
-    { experimental_context },
-  ) => {
+  needsApproval: (_input, ctx) => !getBypassPermissions(ctx),
+  execute: async ({ content, relativePath }, { experimental_context }) => {
     const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
-    const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
-    const previous = await readFileIfExists(absolutePath);
+    try {
+      const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
+      const previous = await readFileIfExists(absolutePath);
 
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, content, "utf8");
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, content, "utf8");
 
-    return {
-      ok: true,
-      path: path.relative(workspaceRoot, absolutePath) || relativePath,
-      operation: previous === null ? "created" : "overwritten",
-      bytesWritten: Buffer.byteLength(content, "utf8"),
-      lines: countLines(content),
-      previousLines: previous === null ? 0 : countLines(previous),
-    } as const;
+      return toolOk({
+        path: path.relative(workspaceRoot, absolutePath) || relativePath,
+        operation: (previous === null ? "created" : "overwritten") as
+          | "created"
+          | "overwritten",
+        bytesWritten: Buffer.byteLength(content, "utf8"),
+        lines: countLines(content),
+        previousLines: previous === null ? 0 : countLines(previous),
+      });
+    } catch (error) {
+      return toolErr(error);
+    }
   },
 });
 
-export const editFileTool = tool({
+export const editFileTool = approvedTool({
   description: [
     "Replace an exact text fragment inside an existing workspace file (search-replace).",
     "",
@@ -172,66 +161,61 @@ export const editFileTool = tool({
     "- The user must approve every edit in the UI; state your `reason` clearly.",
   ].join("\n"),
   inputSchema: editFileInputSchema,
-  needsApproval: requireApprovalUnlessBypassed,
+  needsApproval: (_input, ctx) => !getBypassPermissions(ctx),
   execute: async (
     { newString, oldString, relativePath, replaceAll = false },
     { experimental_context },
   ) => {
     const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
-    const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
+    try {
+      const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
 
-    if (oldString === newString) {
-      return {
-        ok: false,
-        error: "oldString and newString are identical; nothing to do.",
-      } as const;
-    }
+      if (oldString === newString) {
+        return toolErr("oldString and newString are identical; nothing to do.");
+      }
 
-    const previous = await readFileIfExists(absolutePath);
+      const previous = await readFileIfExists(absolutePath);
 
-    if (previous === null) {
-      return {
-        ok: false,
-        error: `File not found: ${relativePath}. Use write_file to create a new file.`,
-      } as const;
-    }
+      if (previous === null) {
+        return toolErr(
+          `File not found: ${relativePath}. Use write_file to create a new file.`,
+        );
+      }
 
-    if (!previous.includes(oldString)) {
-      return {
-        ok: false,
-        error:
+      if (!previous.includes(oldString)) {
+        return toolErr(
           "oldString was not found. Check whitespace/indentation and ensure the text matches read_file output byte-for-byte.",
-      } as const;
+        );
+      }
+
+      const occurrences = previous.split(oldString).length - 1;
+
+      if (occurrences > 1 && !replaceAll) {
+        return toolErr(
+          `oldString matched ${occurrences} times. Provide more surrounding context to make it unique, or pass replaceAll: true. (occurrences: ${occurrences})`,
+        );
+      }
+
+      const nextContent = replaceAll
+        ? previous.split(oldString).join(newString)
+        : previous.replace(oldString, newString);
+
+      await fs.writeFile(absolutePath, nextContent, "utf8");
+
+      const matchIndex = previous.indexOf(oldString);
+      const startLine = previous.slice(0, matchIndex).split("\n").length;
+
+      return toolOk({
+        path: path.relative(workspaceRoot, absolutePath) || relativePath,
+        operation: "edited" as const,
+        replacements: replaceAll ? occurrences : 1,
+        startLine,
+        removedLines: countLines(oldString),
+        addedLines: countLines(newString),
+      });
+    } catch (error) {
+      return toolErr(error);
     }
-
-    const occurrences = previous.split(oldString).length - 1;
-
-    if (occurrences > 1 && !replaceAll) {
-      return {
-        ok: false,
-        error: `oldString matched ${occurrences} times. Provide more surrounding context to make it unique, or pass replaceAll: true.`,
-        occurrences,
-      } as const;
-    }
-
-    const nextContent = replaceAll
-      ? previous.split(oldString).join(newString)
-      : previous.replace(oldString, newString);
-
-    await fs.writeFile(absolutePath, nextContent, "utf8");
-
-    const matchIndex = previous.indexOf(oldString);
-    const startLine = previous.slice(0, matchIndex).split("\n").length;
-
-    return {
-      ok: true,
-      path: path.relative(workspaceRoot, absolutePath) || relativePath,
-      operation: "edited",
-      replacements: replaceAll ? occurrences : 1,
-      startLine,
-      removedLines: countLines(oldString),
-      addedLines: countLines(newString),
-    } as const;
   },
 });
 

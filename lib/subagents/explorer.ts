@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { instrumentModel } from "@/lib/devtools";
 import { gateway, gatewayModelId } from "@/lib/gateway";
+import { toolErr, toolOk } from "@/lib/tool-result";
 import {
   getWorkspaceToolContext,
   workspaceToolset,
@@ -145,20 +146,13 @@ export const exploreWorkspaceTool = tool({
         ),
       );
 
-      return {
-        ok: true as const,
+      return toolOk({
         summary: result.text,
         filesExamined,
         stepsUsed: result.steps.length,
-      };
+      });
     } catch (error) {
-      return {
-        ok: false as const,
-        error:
-          error instanceof Error
-            ? error.message
-            : "explorer subagent failed with an unknown error",
-      };
+      return toolErr(error);
     }
   },
 });

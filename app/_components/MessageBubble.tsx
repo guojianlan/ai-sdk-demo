@@ -2,8 +2,13 @@ import type { UIMessage } from "ai";
 
 import { extractMessageText } from "@/app/_lib/chat-session";
 
+import { AssistantMarkdown } from "./AssistantMarkdown";
 import { ToolPartCard } from "./tool-card/ToolPartCard";
-import { isToolPart, type ApprovalHandler } from "./tool-card/types";
+import {
+  isToolPart,
+  type ApprovalHandler,
+  type OnToolOutputHandler,
+} from "./tool-card/types";
 
 /**
  * 一条消息的气泡。
@@ -17,9 +22,11 @@ import { isToolPart, type ApprovalHandler } from "./tool-card/types";
 export function MessageBubble({
   message,
   onApproval,
+  onToolOutput,
 }: {
   message: UIMessage;
   onApproval: ApprovalHandler;
+  onToolOutput: OnToolOutputHandler;
 }) {
   const isUser = message.role === "user";
   const renderableParts = message.parts.filter(
@@ -51,19 +58,32 @@ export function MessageBubble({
         <div className="space-y-3">
           {renderableParts.map((part, index) => {
             if (part.type === "text") {
-              return (
-                <div
-                  key={`text-${index}`}
-                  className="whitespace-pre-wrap text-[15px] leading-7 text-slate-800"
-                >
-                  {(part as { text: string }).text}
-                </div>
-              );
+              const text = (part as { text: string }).text;
+              // user 消息保持纯文本，不过 markdown —— 避免用户随手打的 `*foo*` 被吃成斜体、
+              // 或者贴的代码片段里 ` 被当成 inline code 起始。
+              if (isUser) {
+                return (
+                  <div
+                    key={`text-${index}`}
+                    className="whitespace-pre-wrap text-[15px] leading-7 text-slate-800"
+                  >
+                    {text}
+                  </div>
+                );
+              }
+              return <AssistantMarkdown key={`text-${index}`} text={text} />;
             }
 
             if (isToolPart(part)) {
               const keyId = part.toolCallId ?? `tool-${index}`;
-              return <ToolPartCard key={keyId} part={part} onApproval={onApproval} />;
+              return (
+                <ToolPartCard
+                  key={keyId}
+                  part={part}
+                  onApproval={onApproval}
+                  onToolOutput={onToolOutput}
+                />
+              );
             }
 
             return null;

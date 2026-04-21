@@ -14,19 +14,23 @@
  */
 
 import { renderToolInput } from "./input-views";
+import { interactiveCardRegistry } from "./interactive-cards";
 import { renderToolOutput, summarizeToolOutput } from "./output-views";
 import {
   getToolName,
   type ApprovalHandler,
   type LooseToolPart,
+  type OnToolOutputHandler,
 } from "./types";
 
 export function ToolPartCard({
   part,
   onApproval,
+  onToolOutput,
 }: {
   part: LooseToolPart;
   onApproval: ApprovalHandler;
+  onToolOutput: OnToolOutputHandler;
 }) {
   const toolName = getToolName(part);
   const state = part.state ?? "input-streaming";
@@ -42,6 +46,14 @@ export function ToolPartCard({
   }
 
   if (state === "input-available") {
+    // 交互工具（ask_question / ask_choice / show_reference）在 input-available
+    // 阶段等用户填 output —— 从 registry 里选对应卡片渲染。其它 server-side
+    // 工具 input-available 表示"正在执行"，显示 running… 占位。
+    const InteractiveCard = interactiveCardRegistry[toolName];
+    if (InteractiveCard) {
+      return <InteractiveCard part={part} onToolOutput={onToolOutput} />;
+    }
+
     return (
       <div className="rounded-md border border-slate-200 bg-white p-3">
         <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">
