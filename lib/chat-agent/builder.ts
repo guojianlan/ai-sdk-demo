@@ -60,6 +60,11 @@ export type ChatAgentConfig<
   stepLimit: number;
   /** agent loop 结束时触发（MCP 子进程清理等）。 */
   onFinish?: () => void | Promise<void>;
+  /**
+   * P4-b：压缩过的老对话摘要。有值则作为独立 prompt 层注入 system prompt。
+   * 路由在 POST handler 里决定是否压缩，把结果传进来。null / undefined = 没压过。
+   */
+  conversationSummary?: string | null;
 };
 
 export function createChatAgent<
@@ -95,6 +100,7 @@ export function createChatAgent<
         persona: config.persona,
         developerRules,
         workspaceRoot,
+        conversationSummary: config.conversationSummary ?? null,
       });
 
       return {

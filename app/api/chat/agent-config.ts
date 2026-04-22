@@ -10,6 +10,7 @@ import { instrumentModel } from "@/lib/devtools";
 import { env } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
 import { interactiveToolset } from "@/lib/interactive-tools";
+import { planToolset } from "@/lib/plan-tools";
 import { subagentToolset } from "@/lib/subagents/explorer";
 import { workspaceToolset } from "@/lib/workspace-tools";
 import { writeToolset } from "@/lib/write-tools";
@@ -74,6 +75,13 @@ export function buildProjectEngineerDeveloperRules(
         "- Treat build output, dependency folders, and generated files as low priority unless the user asks for them.",
         "- For questions that clearly need reading many files to answer (e.g. 'how does auth work', 'what is the architecture of module X'), prefer delegating to `explore_workspace` — it runs in an isolated context and returns only a short summary, keeping this conversation lean. Don't use it for single-file lookups.",
         "- For edits: always read the target file before calling `write_file` or `edit_file`, and keep the scope tight (one concern per edit).",
+        "",
+        "PLAN TRACKING (`update_plan`):",
+        "- For any multi-step task (>= 3 steps), call `update_plan` EARLY — right after the clarification gate is satisfied, before diving into the first tool call — to commit to an initial plan. Each step should be one concrete action, not a category.",
+        "- Call `update_plan` AGAIN whenever real state changes: a step finishes → status=done; you hit an obstacle → status=blocked + note; the plan itself needs to grow or shrink → send the updated full list.",
+        "- Send the WHOLE list every time (snapshot, not diff). Keep step `id` stable across updates — don't rename.",
+        "- Do NOT use update_plan for trivial single-step work (one-line fix, single file rename). It's for tasks where tracking progress helps the user understand what's happening.",
+        "- Typically only one step should be `in_progress` at a time.",
       ]
     : [
         ...clarificationGate,
@@ -103,16 +111,18 @@ export const projectEngineerCallOptionsSchema = z.object({
 });
 
 /**
- * 只读 + 写入 + 子 agent + 交互四套自家工具集。MCP 动态工具由路由在请求时合并。
+ * 只读 + 写入 + 子 agent + 交互 + plan 五套自家工具集。MCP 动态工具由路由在请求时合并。
  *
- * 注意交互工具（interactiveToolset）在所有 access mode 下都可用——即使
- * `no-tools` 模式也允许 agent 追问用户意图（只是没办法真读文件而已）。
+ * 注意：
+ * - interactiveToolset 在所有 access mode 下都可用（即使 `no-tools` 模式也允许 agent 追问）
+ * - planToolset（update_plan）同样通用——多步任务的进度展示即使没工具也有价值
  */
 export const projectEngineerStaticToolset = {
   ...workspaceToolset,
   ...writeToolset,
   ...subagentToolset,
   ...interactiveToolset,
+  ...planToolset,
 };
 
 /**
@@ -122,6 +132,8 @@ export const projectEngineerStaticToolset = {
 export function createProjectEngineerAgent(params: {
   tools: ToolSet;
   onFinish?: () => void | Promise<void>;
+  /** P4-b：压缩过的老对话摘要（可选）。 */
+  conversationSummary?: string | null;
 }) {
   return createChatAgent({
     model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
@@ -141,5 +153,6 @@ export function createProjectEngineerAgent(params: {
     tools: params.tools,
     stepLimit: 16,
     onFinish: params.onFinish,
+    conversationSummary: params.conversationSummary,
   });
 }

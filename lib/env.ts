@@ -65,6 +65,29 @@ const shellName =
 
 const isProduction = process.env.NODE_ENV === "production";
 
+/**
+ * P4-b compaction 配置。
+ *
+ * - `thresholdTokens`：对话 token（粗估）超过这个数就触发一次 handoff 摘要。
+ *   默认 60k 偏小，是为了 dev 环境实际能触发到；生产里可以往 300k+ 调。
+ * - `keepRecentMessages`：压缩后保留最近这么多条原消息逐字传给模型，其余
+ *   压成 summary 层。8 是 codex 风格的手感，让模型看见最近的用户意图和工具结果。
+ */
+function parseIntOr(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+const compactionThresholdTokens = parseIntOr(
+  process.env.COMPACTION_THRESHOLD_TOKENS,
+  60_000,
+);
+const compactionKeepRecentMessages = parseIntOr(
+  process.env.COMPACTION_KEEP_RECENT,
+  8,
+);
+
 export const env = {
   isProduction,
   /**
@@ -79,6 +102,11 @@ export const env = {
     baseURL: gatewayBaseURL,
     apiKey: gatewayApiKey,
     modelId: gatewayModelId,
+  },
+  /** P4-b context compaction 配置。 */
+  compaction: {
+    thresholdTokens: compactionThresholdTokens,
+    keepRecentMessages: compactionKeepRecentMessages,
   },
 } as const;
 

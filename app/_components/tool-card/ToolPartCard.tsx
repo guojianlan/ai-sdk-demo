@@ -22,6 +22,7 @@ import {
   type LooseToolPart,
   type OnToolOutputHandler,
 } from "./types";
+import { UpdatePlanCard } from "./UpdatePlanCard";
 
 export function ToolPartCard({
   part,
@@ -34,6 +35,13 @@ export function ToolPartCard({
 }) {
   const toolName = getToolName(part);
   const state = part.state ?? "input-streaming";
+
+  // `update_plan` 的特殊渲染：无论 state 在哪个阶段都展示完整 plan card（读 part.input）。
+  // 这种工具不走"input → approval → output"那套默认状态机——plan 本身就是展示，
+  // server execute 只是 ack，没必要把它塞进 <details> 折叠。
+  if (toolName === "update_plan") {
+    return <UpdatePlanCard part={part} />;
+  }
 
   if (state === "input-streaming") {
     return (

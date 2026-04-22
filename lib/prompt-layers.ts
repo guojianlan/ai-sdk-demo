@@ -14,10 +14,11 @@
  *    只需要换装配层，上游构造代码不动。
  *
  * 注入时的层顺序（对应 codex 的 build_initial_context 设计）：
- *   1. Persona              —— 最稳定，放最顶
- *   2. Developer rules      —— 运行期规则，次之
- *   3. Environment context  —— 客观环境事实
- *   4. User instructions    —— 用户项目规则（AGENTS.md）
+ *   1. Persona                —— 最稳定，放最顶
+ *   2. Developer rules        —— 运行期规则，次之
+ *   3. Environment context    —— 客观环境事实
+ *   4. User instructions      —— 用户项目规则（AGENTS.md）
+ *   5. Conversation summary   —— P4-b compaction 的 handoff 摘要（可选，有才加）
  *
  * 详见 docs/codex-prompt-layering.md 的对照表。
  */
@@ -41,6 +42,14 @@ export type PromptLayers = {
    * 没有任何 AGENTS.md 时为 null，会自动被跳过。
    */
   userInstructions: string | null;
+  /**
+   * P4-b：对话太长触发 compaction 后，把 handoff summary 注入成单独一层。
+   * 没压缩过的 session 这里是 null，这层会被跳过。
+   *
+   * 措辞在消费端（system-prompt.ts）封装：会给一段引导性开场白，让模型明白
+   * "这是之前对话的摘要，不是当前对话"。
+   */
+  conversationSummary: string | null;
 };
 
 /** 每层在最终字符串里的标题。沿用 codex 的风格（# 开头 + 语义名）。 */
@@ -49,6 +58,7 @@ const LAYER_HEADINGS = {
   developerRules: "# Developer rules",
   environmentContext: "# Environment context",
   userInstructions: "# User project instructions",
+  conversationSummary: "# Conversation summary so far",
 } as const;
 
 /**
@@ -74,6 +84,9 @@ export function assemblePromptLayers(layers: PromptLayers): string {
   if (layers.userInstructions) {
     pushSection(LAYER_HEADINGS.userInstructions, layers.userInstructions);
   }
+  if (layers.conversationSummary) {
+    pushSection(LAYER_HEADINGS.conversationSummary, layers.conversationSummary);
+  }
 
   return sections.join("\n\n");
 }
@@ -98,6 +111,13 @@ export function explainPromptLayers(layers: PromptLayers): {
       "userInstructions",
       LAYER_HEADINGS.userInstructions,
       layers.userInstructions,
+    ]);
+  }
+  if (layers.conversationSummary) {
+    entries.push([
+      "conversationSummary",
+      LAYER_HEADINGS.conversationSummary,
+      layers.conversationSummary,
     ]);
   }
 

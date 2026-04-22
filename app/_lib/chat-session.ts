@@ -141,9 +141,14 @@ export function deriveSessionTitle(messages: UIMessage[]): string {
 }
 
 export function deriveSessionPreview(messages: UIMessage[]): string {
+  // 侧栏预览跳过 role=system 消息——它们是 UI 标记（如 compaction 通知），
+  // 内容不是真实对话，不应该当成"最近一句话"展示。
   const lastTextMessage = [...messages]
     .reverse()
-    .find((message) => extractMessageText(message));
+    .find(
+      (message) =>
+        message.role !== "system" && extractMessageText(message),
+    );
 
   return extractMessageText(lastTextMessage);
 }
