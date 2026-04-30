@@ -1,6 +1,6 @@
 "use client";
 
-import type { PlanStep, PlanStepStatus } from "@/lib/plan-tools";
+import type { PlanStep, PlanStepStatus } from "@/lib/tools/plan";
 
 import type { LooseToolPart } from "./types";
 

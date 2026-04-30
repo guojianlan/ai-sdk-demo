@@ -9,11 +9,10 @@ import {
 import { instrumentModel } from "@/lib/devtools";
 import { env } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
-import { interactiveToolset } from "@/lib/interactive-tools";
-import { planToolset } from "@/lib/plan-tools";
-import { subagentToolset } from "@/lib/subagents/explorer";
-import { workspaceToolset } from "@/lib/workspace-tools";
-import { writeToolset } from "@/lib/write-tools";
+import { globalRegistry } from "@/lib/tooling";
+// 副作用 import：触发 lib/tools/index.ts 注册全部业务 tool 到 globalRegistry。
+// 必须放在 globalRegistry.pick(...) 之前。
+import "@/lib/tools";
 
 /**
  * 主聊天路由的"不变部分"：persona、developer rules、callOptions schema、静态工具集。
@@ -111,19 +110,29 @@ export const projectEngineerCallOptionsSchema = z.object({
 });
 
 /**
- * 只读 + 写入 + 子 agent + 交互 + plan 五套自家工具集。MCP 动态工具由路由在请求时合并。
+ * 主聊天的静态工具集。MCP 动态工具由路由在请求时合并。
  *
- * 注意：
- * - interactiveToolset 在所有 access mode 下都可用（即使 `no-tools` 模式也允许 agent 追问）
- * - planToolset（update_plan）同样通用——多步任务的进度展示即使没工具也有价值
+ * 从 globalRegistry pick：所有 tool 在 `lib/tools/` 下用 `defineTool` 注册一处，
+ * 这里只列名字。注意：interactive / update_plan 在所有 access mode 下都可用
+ * （`no-tools` 模式也允许追问 + plan 进度），见 `route.ts` 里的 mode 分支。
  */
-export const projectEngineerStaticToolset = {
-  ...workspaceToolset,
-  ...writeToolset,
-  ...subagentToolset,
-  ...interactiveToolset,
-  ...planToolset,
-};
+export const projectEngineerStaticToolset: ToolSet = globalRegistry.pick([
+  // workspace readonly
+  "list_files",
+  "search_code",
+  "read_file",
+  // write
+  "write_file",
+  "edit_file",
+  // subagent
+  "explore_workspace",
+  // interactive
+  "ask_question",
+  "ask_choice",
+  "show_reference",
+  // plan tracking
+  "update_plan",
+]);
 
 /**
  * 用上面这套 persona / rules / schema / toolset 构造一个主聊天 agent。

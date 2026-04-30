@@ -22,6 +22,7 @@ import {
 } from "@/app/_lib/chat-session";
 
 import { ChatInput } from "./_components/ChatInput";
+import { ClientHome } from "./_components/ClientHome";
 import { EmptyState } from "./_components/EmptyState";
 import { MessageBubble } from "./_components/MessageBubble";
 import { PlanCard } from "./_components/PlanCard";
@@ -33,14 +34,34 @@ import {
 } from "./_components/WorkspacePicker";
 
 /**
- * 主页 Home：一切状态和副作用的编排中心。
+ * 入口分发：
+ * - `NEXT_PUBLIC_AGENT_LOOP_MODE=client` → 渲染前端驱动 single-step + streaming 版本（ClientHome）
+ * - 其它（默认 server）→ 渲染原 ToolLoopAgent 服务端 loop 版本（下方的 ServerHome）
+ *
+ * NEXT_PUBLIC_* 在 Next.js 编译时被内联进客户端 bundle，不走运行时网络请求。
+ */
+const AGENT_LOOP_MODE: "client" | "server" =
+  process.env.NEXT_PUBLIC_AGENT_LOOP_MODE === "client" ? "client" : "server";
+
+export default function Page() {
+  if (AGENT_LOOP_MODE === "client") {
+    return <ClientHome />;
+  }
+  return <ServerHome />;
+}
+
+/**
+ * ServerHome：原始的服务端 ToolLoopAgent 模式主页（一切状态和副作用的编排中心）。
  * UI 都已经拆成了 _components/*；这里只留：
  * - state + effects（localStorage / URL 同步 / 工作区加载 / useChat）
  * - 顶层 JSX 拼装（侧栏 + header + 消息列表 + 输入框 + picker modal）
  *
  * 需要改 UI 细节：去对应的 _components 文件改；需要改状态/流程：改这里。
+ *
+ * Client 模式（前端驱动 single-step + streaming）的入口在 `ClientHome`，按
+ * `NEXT_PUBLIC_AGENT_LOOP_MODE` env 在文件顶部 `Page` dispatch 中切换。
  */
-export default function Home() {
+function ServerHome() {
   const [sessions, setSessions] = useState<ChatSession[]>([createSession()]);
   const [activeChatId, setActiveChatId] = useState("");
   const [draft, setDraft] = useState("");

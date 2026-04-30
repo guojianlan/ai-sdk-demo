@@ -1,22 +1,17 @@
-import { tool } from "ai";
 import { z } from "zod";
 
-import { toolOk } from "@/lib/tool-result";
+import { defineTool } from "@/lib/tooling";
 
 /**
- * P3-c 后续：`update_plan` 工具，给 agent 在执行期维护一份 **结构化、实时更新**
- * 的任务 plan。每次调用 = 一次快照（完整步骤列表），不是 diff。
+ * `update_plan` —— agent 在执行期维护一份**结构化、实时更新**的任务 plan。
+ * 每次调用 = 一次完整快照（不是 diff），存活在 UI message 的 tool input 里。
  *
- * 和 Plan mode（P2-b 的 `/api/plan`）的区别：
- * - Plan mode：用户在开动前生成的**静态提案**，review 后当 markdown 发给 agent
- * - update_plan：**执行期的活对象**，agent 自己随着工作进度改 step.status / 加步骤
+ * 这个工具是 readonly：execute 只是个 ack，让 agent loop 推进；plan state 本身
+ * 就是 input，UI 直接渲染 input 字段（参见 `UpdatePlanCard`）。
  *
- * 存储：plan state 就存在 UI message 的 `tool-update_plan` part 的 `input` 字段里，
- * P3-b 的 DB 自动持久化。前端读最新一次 update_plan 的 input 作为"当前 plan 视图"。
- *
- * 不做 diff 是故意的——"全量快照 + 每次重写"比 "diff 累加" 对 LLM 更友好，
- * 它不用记"我之前说过啥要改啥"，每次把完整现状重新发一遍即可。codex 的同名工具
- * 就是这个设计。
+ * 和 Plan mode（`/api/plan`）的区别：
+ * - Plan mode：用户开动前生成的**静态提案**，review 后 markdown 喂给 agent
+ * - update_plan：**执行期的活对象**，agent 自己随进度改 step.status / 加步骤
  */
 
 export const planStepStatusSchema = z.enum([
@@ -71,7 +66,11 @@ export const updatePlanInputSchema = z.object({
 
 export type UpdatePlanInput = z.infer<typeof updatePlanInputSchema>;
 
-export const updatePlanTool = tool({
+export const updatePlanTool = defineTool({
+  name: "update_plan",
+  // readonly：不改世界（plan state 活在 input 里），永不审批
+  kind: "readonly",
+  displayName: "update plan",
   description: [
     "Maintain a live, structured plan the user can see in the UI while you work. Each call is a SNAPSHOT of the whole plan (not a delta).",
     "",
@@ -96,23 +95,20 @@ export const updatePlanTool = tool({
     "- Send the WHOLE list every time — the tool does not merge deltas.",
   ].join("\n"),
   inputSchema: updatePlanInputSchema,
-  // 服务端 execute 是一个 no-op：plan state 本身就活在 tool call 的 input 里，
-  // 持久化靠 P3-b 的 DB，UI 渲染也只读 input。execute 只是返回一个简短 ack
-  // 让 agent 的 tool loop 能推进到下一步。
+  // execute = 简短 ack。plan state 本身在 tool call 的 input 里，
+  // 持久化靠 P3-b 的 DB，UI 渲染只读 input。
   execute: async (input) => {
     const doneCount = input.steps.filter((s) => s.status === "done").length;
     const inProgressCount = input.steps.filter(
       (s) => s.status === "in_progress",
     ).length;
-    return toolOk({
+    return {
       acknowledged: true as const,
       stepCount: input.steps.length,
       doneCount,
       inProgressCount,
-    });
+    };
   },
 });
 
-export const planToolset = {
-  update_plan: updatePlanTool,
-};
+export const planTools = [updatePlanTool];

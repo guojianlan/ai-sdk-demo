@@ -88,6 +88,23 @@ const compactionKeepRecentMessages = parseIntOr(
   8,
 );
 
+/**
+ * Agent loop 跑在哪一端。
+ *
+ * - `server`（默认）：主聊天 `/api/chat` 走 `ToolLoopAgent`，服务端一次跑完
+ *   所有 step；workflow agent 节点暂时仍走客户端 loop（节点级显式控制）。
+ * - `client`：主聊天和 workflow agent 节点都用前端驱动的 single-step + streaming
+ *   协议（`/api/agent/step-stream`）。每一步 LLM 输出文字增量推回前端，前端按
+ *   `finishReason` / 审批 / 用户暂停决定是否再发下一步。
+ *
+ * 必须用 `NEXT_PUBLIC_*` 前缀：客户端 hook 也要读这个值来选择 `useChat` 还是
+ * `useClientAgentChat`。
+ */
+const agentLoopModeRaw =
+  pickString(process.env.NEXT_PUBLIC_AGENT_LOOP_MODE) ?? "server";
+const agentLoopMode: "client" | "server" =
+  agentLoopModeRaw === "client" ? "client" : "server";
+
 export const env = {
   isProduction,
   /**
@@ -108,6 +125,8 @@ export const env = {
     thresholdTokens: compactionThresholdTokens,
     keepRecentMessages: compactionKeepRecentMessages,
   },
+  /** Agent loop 跑在哪一端：'client' = 前端驱动 single-step；'server' = 服务端 ToolLoopAgent。 */
+  agentLoopMode,
 } as const;
 
 /**

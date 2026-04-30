@@ -9,7 +9,10 @@ import {
   createProjectEngineerAgent,
   projectEngineerStaticToolset,
 } from "@/app/api/chat/agent-config";
-import { interactiveToolset } from "@/lib/interactive-tools";
+import { globalRegistry } from "@/lib/tooling";
+// 副作用 import：触发 lib/tools/index.ts 注册全部 tool（agent-config 也 import 了，
+// 双 import 没有副作用——register 内部去重抛错，这里没竞争因为 import 是 idempotent）。
+import "@/lib/tools";
 import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
@@ -160,10 +163,15 @@ export async function POST(request: Request) {
   // ---------------------------------------------------------------------
 
   const agent = createProjectEngineerAgent({
-    // no-tools 模式也给交互工具：即使不让读文件，也允许 agent 追问用户意图。
+    // no-tools 模式也给交互工具：即使不让读文件，也允许 agent 追问用户意图 + 跟进 plan。
     tools: hasWorkspaceTools
       ? { ...projectEngineerStaticToolset, ...mcpTools }
-      : { ...interactiveToolset },
+      : globalRegistry.pick([
+          "ask_question",
+          "ask_choice",
+          "show_reference",
+          "update_plan",
+        ]),
     onFinish: closeMcp ?? undefined,
     conversationSummary: agentSummary,
   });

@@ -1,17 +1,13 @@
-import { stepCountIs, tool, ToolLoopAgent } from "ai";
+import { stepCountIs, ToolLoopAgent } from "ai";
 import { z } from "zod";
 
 import { instrumentModel } from "@/lib/devtools";
 import { gateway, gatewayModelId } from "@/lib/gateway";
-import { toolErr, toolOk } from "@/lib/tool-result";
-import {
-  getWorkspaceToolContext,
-  workspaceToolset,
-  type WorkspaceToolContext,
-} from "@/lib/workspace-tools";
+import { defineTool } from "@/lib/tooling";
+import { workspaceTools } from "@/lib/tools/workspace";
 
 /**
- * Explorer subagent —— 专职"摸清一块代码"的只读子 agent。
+ * Explorer subagent —— 把 ToolLoopAgent 包装成一个普通 tool 暴露给主 agent。
  *
  * 为什么单独搞一个 agent 而不是主 agent 多绕几圈？
  * - 当用户问"这个项目怎么做鉴权"这种**发散型**问题时，模型可能要读 20-30 个文件。
@@ -19,15 +15,13 @@ import {
  * - 让 explorer 独立跑，内部 context 随便膨胀，**最终只把一段 ≤ 500 字摘要
  *   交回主 agent**，主 context 只增长 ~500 字。
  *
- * 核心 AI SDK 概念：
- * - `ToolLoopAgent` 可以用 `.generate({ prompt, options })` 在任意位置一次性跑到底，
- *   返回 `{ text, steps, usage, ... }`。
- * - 外层把这个 `.generate()` 调用包在一个 `tool({ execute })` 里，就得到了
- *   "把 subagent 暴露成一个工具"的效果，模型自己决定什么时候用。
+ * 路由策略（见 description）：模型自决 + prompt 工程，无分类器无规则路由。
  *
- * 路由策略（见 exploreWorkspaceTool 的 description）抄的是 open-agents 的做法：
- * 在 description 里写清 WHEN TO USE / WHEN NOT TO USE，让主模型自己判断，
- * 不搞分类器、不搞规则路由。
+ * 抽象层细节：
+ * - `kind: "subagent"`：抽象层永不审批
+ * - subagent 内部还是用 AI SDK 原生 `ToolLoopAgent`（这是个 SDK-级别的能力，
+ *   不是我们的抽象层负责的）。它的 tools 用 `workspaceTools.map(t => t.aiTool)`
+ *   从我们的 registry 拿——保持只读 tool 集合的单一真相源。
  */
 
 const explorerPersona = [
@@ -49,11 +43,17 @@ const explorerCallOptionsSchema = z.object({
   workspaceName: z.string().min(1).optional(),
 });
 
+// subagent 的 tools 是 AI SDK 的 ToolSet 形态——我们的 DefinedTool 列表 .map 出 aiTool
+// 拼成对象。reduce 比 Object.fromEntries(map) 一行就完成。
+const subagentToolSet = Object.fromEntries(
+  workspaceTools.map((t) => [t.name, t.aiTool]),
+);
+
 const explorerAgent = new ToolLoopAgent({
   model: instrumentModel(gateway.chatModel(gatewayModelId)),
   instructions: explorerPersona,
   // 20 步够 list_files + search_code 来回 + 5-10 次 read_file + 总结。
-  // 这是 open-agents SUBAGENT_STEP_LIMIT = 50 的一半，适合我们这个规模。
+  // open-agents 的 SUBAGENT_STEP_LIMIT = 50，我们这个规模一半就够。
   stopWhen: stepCountIs(20),
   callOptionsSchema: explorerCallOptionsSchema,
   prepareCall: async ({ options, ...settings }) => {
@@ -62,33 +62,19 @@ const explorerAgent = new ToolLoopAgent({
       experimental_context: {
         workspaceRoot: options.workspaceRoot,
         workspaceName: options.workspaceName ?? "",
-      } satisfies WorkspaceToolContext,
+        // bypassPermissions: true —— subagent 内部全是 readonly tools，
+        // 即使加进来也无审批；保险起见显式设 true 防未来改 workspace tool 的 kind 时漏改。
+        bypassPermissions: true,
+      },
     };
   },
-  tools: workspaceToolset,
+  tools: subagentToolSet,
 });
 
-const exploreInputSchema = z.object({
-  question: z
-    .string()
-    .min(3)
-    .describe(
-      "The specific question for the explorer to answer. Be as concrete as possible — explorer cannot ask back.",
-    ),
-  hint: z
-    .string()
-    .optional()
-    .describe(
-      "Optional extra hint about where to start looking (e.g., 'likely in lib/auth/*' or 'check middleware files first').",
-    ),
-});
-
-/**
- * 把 explorer 暴露成一个普通 tool。
- * 主 agent 根据下面这段 description 决定什么时候调它 —— 没有分类器、没有规则兜底。
- * 这是"模型自决 + prompt 工程"的典型做法，参考 open-agents/packages/agent/tools/task.ts。
- */
-export const exploreWorkspaceTool = tool({
+export const exploreWorkspaceTool = defineTool({
+  name: "explore_workspace",
+  kind: "subagent",
+  displayName: "explore workspace",
   description: [
     "Delegate a codebase-survey question to the explorer subagent. The explorer runs in its own isolated context, reads many files, and returns ONLY a concise summary to keep your main conversation clean.",
     "",
@@ -114,49 +100,51 @@ export const exploreWorkspaceTool = tool({
     "",
     "IMPORTANT: After receiving the summary, base your final answer on it. Don't re-read the same files yourself unless you specifically need details the summary didn't cover.",
   ].join("\n"),
-  inputSchema: exploreInputSchema,
-  execute: async ({ hint, question }, { experimental_context, abortSignal }) => {
-    const { workspaceName, workspaceRoot } = getWorkspaceToolContext(
-      experimental_context,
-    );
-
+  inputSchema: z.object({
+    question: z
+      .string()
+      .min(3)
+      .describe(
+        "The specific question for the explorer to answer. Be as concrete as possible — explorer cannot ask back.",
+      ),
+    hint: z
+      .string()
+      .optional()
+      .describe(
+        "Optional extra hint about where to start looking (e.g., 'likely in lib/auth/*' or 'check middleware files first').",
+      ),
+  }),
+  execute: async ({ hint, question }, { workspace }) => {
     const prompt = hint
       ? `Question: ${question}\n\nStart hint: ${hint}`
       : question;
 
-    try {
-      const result = await explorerAgent.generate({
-        prompt,
-        options: { workspaceRoot, workspaceName },
-        abortSignal,
-      });
+    const result = await explorerAgent.generate({
+      prompt,
+      options: { workspaceRoot: workspace.root, workspaceName: workspace.name },
+    });
 
-      // 从 steps 里抽出 read_file 过的路径作为透明度指标，
-      // 让主 agent / 用户知道 explorer 真的动了手，不是凭空给答案。
-      const filesExamined = Array.from(
-        new Set(
-          result.steps
-            .flatMap((step) => step.toolCalls ?? [])
-            .filter((call) => call.toolName === "read_file")
-            .map((call) => {
-              const input = call.input as { relativePath?: string } | undefined;
-              return input?.relativePath;
-            })
-            .filter((p): p is string => typeof p === "string"),
-        ),
-      );
+    // 从 steps 里抽出 read_file 过的路径作为透明度指标，
+    // 让主 agent / 用户知道 explorer 真的动了手，不是凭空给答案。
+    const filesExamined = Array.from(
+      new Set(
+        result.steps
+          .flatMap((step) => step.toolCalls ?? [])
+          .filter((call) => call.toolName === "read_file")
+          .map((call) => {
+            const input = call.input as { relativePath?: string } | undefined;
+            return input?.relativePath;
+          })
+          .filter((p): p is string => typeof p === "string"),
+      ),
+    );
 
-      return toolOk({
-        summary: result.text,
-        filesExamined,
-        stepsUsed: result.steps.length,
-      });
-    } catch (error) {
-      return toolErr(error);
-    }
+    return {
+      summary: result.text,
+      filesExamined,
+      stepsUsed: result.steps.length,
+    };
   },
 });
 
-export const subagentToolset = {
-  explore_workspace: exploreWorkspaceTool,
-};
+export const subagentTools = [exploreWorkspaceTool];

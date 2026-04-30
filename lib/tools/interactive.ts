@@ -1,27 +1,27 @@
 import { z } from "zod";
 
-import { interactiveTool } from "@/lib/tool-helpers";
+import { defineTool } from "@/lib/tooling";
 
 /**
- * 交互工具集（P3-c）。
- *
- * 这组工具**没有服务端 execute**——agent 发出 tool-call 后，AI SDK 停在
- * "input-available" 状态等客户端用 `addToolOutput` 回灌结果。
- * 换句话说，这组工具的 output 来自人类大脑，不是代码。
+ * 交互工具集 —— `kind: "interactive"`，**不传 execute**：抽象层会让 AI SDK 把
+ * tool-call 直接回传给客户端等用户填，runner 通过 `onAwaitingInteractive` 暂停
+ * 并把用户输入打成 `tool-result` part 拼回 messages。
  *
  * 三个起手式：
- * - `ask_question`：开放式追问（"要处理哪个文件？"）
- * - `ask_choice`：多选一（"dev / prod？"）
- * - `show_reference`：展示外链/引用卡，让用户确认看过
+ * - `ask_question`    开放追问（"要处理哪个文件？"）
+ * - `ask_choice`      多选一（"dev / prod？"）
+ * - `show_reference`  展示外链/引用卡，让用户确认看过
  *
- * 要再加交互姿势（比如填表、附件上传、多选），新写一个 `interactiveTool(...)`
- * 放这里，再在 `app/_components/tool-card/interactive-cards.tsx` 的 registry 里加 UI。
- *
- * ⚠ tool name 必须全小写 + 下划线（AI SDK / OpenAI 对 tool name 的要求），
- *   下面的 key 就是 agent 看到的 tool name。
+ * 加新姿势：调 `defineTool({ kind: "interactive", ... })`，定义好 input/output
+ * schema 即可；客户端 UI 负责渲染并通过 `submitToolResult(toolCallId, output)`
+ * 把用户输入回灌。当前 ClientHome 的 AgentInteractiveCard 用一刀切的"文本框 +
+ * { answer }"，如果新工具需要别的 UI 形态，要同时扩前端 dispatcher。
  */
 
-export const askQuestionTool = interactiveTool({
+export const askQuestionTool = defineTool({
+  name: "ask_question",
+  kind: "interactive",
+  displayName: "ask question",
   description: [
     "Ask the user an open-ended clarifying question when you need information to proceed.",
     "",
@@ -51,7 +51,10 @@ export const askQuestionTool = interactiveTool({
   }),
 });
 
-export const askChoiceTool = interactiveTool({
+export const askChoiceTool = defineTool({
+  name: "ask_choice",
+  kind: "interactive",
+  displayName: "ask choice",
   description: [
     "Ask the user to pick one option from a closed list. Always include your own recommended pick via `recommendedId` so the user can see what you would choose.",
     "",
@@ -117,7 +120,10 @@ export const askChoiceTool = interactiveTool({
   }),
 });
 
-export const showReferenceTool = interactiveTool({
+export const showReferenceTool = defineTool({
+  name: "show_reference",
+  kind: "interactive",
+  displayName: "show reference",
   description: [
     "Show the user a clickable reference card (external link + summary) they should look at before you proceed.",
     "",
@@ -148,13 +154,11 @@ export const showReferenceTool = interactiveTool({
   }),
 });
 
-export const interactiveToolset = {
-  ask_question: askQuestionTool,
-  ask_choice: askChoiceTool,
-  show_reference: showReferenceTool,
-};
+export const interactiveTools = [
+  askQuestionTool,
+  askChoiceTool,
+  showReferenceTool,
+];
 
-/** Tool name → AI SDK part-type 前缀映射。前端 registry dispatch 用。 */
-export const INTERACTIVE_TOOL_NAMES = Object.keys(
-  interactiveToolset,
-) as readonly (keyof typeof interactiveToolset)[];
+/** 工具名 → AI SDK part-type 前缀映射。前端 registry dispatch 用。 */
+export const INTERACTIVE_TOOL_NAMES = interactiveTools.map((t) => t.name);

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { WORKSPACE_ACCESS_MODE_LABELS } from "@/lib/chat-access-mode";
 import {
   formatTimestamp,
@@ -109,6 +111,24 @@ export function SessionSidebar({
           </div>
         )}
       </div>
+
+      <Link
+        href="/workflow/bug-fix"
+        className="group mb-4 block rounded-md border border-slate-300 bg-white p-4 transition-colors duration-200 hover:border-slate-900 hover:bg-slate-50"
+      >
+        <div className="flex items-center justify-between">
+          <Eyebrow>Workflow</Eyebrow>
+          <span className="font-mono text-[10px] text-slate-400 group-hover:text-slate-700">
+            beta →
+          </span>
+        </div>
+        <h3 className="mt-2 text-[14px] font-semibold text-slate-900">
+          Bug 自动修复
+        </h3>
+        <p className="mt-1 text-[12px] leading-5 text-slate-600">
+          描述 bug → 定位 → 提案 → 你审批 → 落地 → 验证 → 报告
+        </p>
+      </Link>
 
       <div className="mb-3 flex items-center justify-between">
         <Eyebrow>Sessions · {sessions.length}</Eyebrow>

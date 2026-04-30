@@ -12,7 +12,7 @@ import type { LooseToolPart, OnToolOutputHandler } from "./types";
  * 约定：
  * - 所有卡片只在 `state === "input-available"` 阶段渲染；
  *   `output-available` 之后交给 output-views 做摘要展示。
- * - 每张卡的 output 形状必须对齐 `lib/interactive-tools.ts` 里对应工具的 outputSchema。
+ * - 每张卡的 output 形状必须对齐 `lib/tools/interactive.ts` 里对应工具的 outputSchema。
  * - 所有按钮的文案走当前项目的 wireframe 风格（mono + 方括号 + 1px 边）。
  */
 

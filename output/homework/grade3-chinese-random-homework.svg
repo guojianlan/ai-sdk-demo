@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1754" viewBox="0 0 1240 1754">
+  <defs>
+    <style>
+      .title{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:48px;font-weight:700;fill:#1f3b2d;}
+      .subtitle{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:24px;fill:#52705f;}
+      .meta{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:24px;fill:#2f4638;}
+      .secTitle{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:28px;font-weight:700;fill:#ffffff;}
+      .body{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:25px;fill:#26362c;}
+      .small{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:21px;fill:#526257;}
+      .tiny{font-family:'Hiragino Sans GB','STHeiti','Arial Unicode MS',sans-serif;font-size:18px;fill:#6a786e;}
+      .answer{stroke:#95a89b;stroke-width:2;stroke-dasharray:8 8;fill:none;}
+      .line{stroke:#b9c8be;stroke-width:2;}
+      .thin{stroke:#d9e3dc;stroke-width:1;}
+      .grid{stroke:#d1ddd6;stroke-width:1.5;fill:#fffef9;}
+    </style>
+    <pattern id="paperDots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="4" cy="4" r="1.2" fill="#dfe9e2"/>
+    </pattern>
+    <linearGradient id="header" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dff4df"/>
+      <stop offset="1" stop-color="#fff4cf"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1240" height="1754" fill="#fffdf4"/>
+  <rect x="0" y="0" width="1240" height="1754" fill="url(#paperDots)" opacity="0.75"/>
+  <rect x="58" y="58" width="1124" height="1638" rx="34" fill="#ffffff" stroke="#c9dccf" stroke-width="4"/>
+  <rect x="58" y="58" width="1124" height="190" rx="34" fill="url(#header)"/>
+  <path d="M930 118 C970 54,1050 90,1040 154 C1105 145,1135 210,1084 242 L958 242 C887 216,884 153,930 118Z" fill="#bde5c8" opacity="0.55"/>
+  <circle cx="1016" cy="136" r="18" fill="#ffd66b" opacity="0.85"/>
+  <path d="M970 202 C1010 166,1048 168,1094 204" fill="none" stroke="#67a876" stroke-width="8" stroke-linecap="round"/>
+  <text x="92" y="136" class="title">三年级下册语文 · 随机练习页</text>
+  <text x="96" y="184" class="subtitle">原创作业｜主题：春日里的发现｜建议用时：25 分钟</text>
+  <text x="94" y="225" class="meta">姓名：__________　班级：__________　日期：__________　自评：☆☆☆☆☆</text>
+
+  <g transform="translate(90,290)">
+    <rect x="0" y="0" width="1060" height="58" rx="16" fill="#4f8f63"/>
+    <text x="28" y="39" class="secTitle">一、词语小花园</text>
+    <text x="0" y="94" class="body">1. 看拼音，写词语。</text>
+    <g transform="translate(20,124)">
+      <text x="0" y="0" class="small">qīng  tíng</text><rect x="0" y="16" width="170" height="64" class="grid"/>
+      <text x="210" y="0" class="small">xīn  shǎng</text><rect x="210" y="16" width="170" height="64" class="grid"/>
+      <text x="420" y="0" class="small">jù  lǒng</text><rect x="420" y="16" width="170" height="64" class="grid"/>
+      <text x="630" y="0" class="small">ǒu  ěr</text><rect x="630" y="16" width="170" height="64" class="grid"/>
+      <text x="840" y="0" class="small">bǎo  zhàng</text><rect x="840" y="16" width="170" height="64" class="grid"/>
+    </g>
+    <text x="0" y="242" class="body">2. 给下面词语选择合适的近义词，写在括号里。</text>
+    <text x="28" y="286" class="body">轻快（　　　）　赶紧（　　　）　仿佛（　　　）　偶尔（　　　）</text>
+    <text x="28" y="328" class="small">备选：好像　立刻　有时　轻盈</text>
+  </g>
+
+  <g transform="translate(90,665)">
+    <rect x="0" y="0" width="1060" height="58" rx="16" fill="#e28b47"/>
+    <text x="28" y="39" class="secTitle">二、读一读，想一想</text>
+    <rect x="0" y="82" width="1060" height="318" rx="18" fill="#fffaf0" stroke="#efd2ae" stroke-width="3"/>
+    <text x="34" y="128" class="body">　　清晨，校园里的玉兰花悄悄开了。洁白的花瓣像一只只小船，</text>
+    <text x="34" y="170" class="body">停在枝头，也停进同学们惊喜的眼睛里。风一吹，淡淡的香气</text>
+    <text x="34" y="212" class="body">顺着走廊跑远了。几只燕子掠过操场，尾巴像剪刀一样灵巧。</text>
+    <text x="34" y="254" class="body">老师说：“会观察的孩子，能把普通的日子写得闪闪发光。”</text>
+    <text x="34" y="296" class="body">于是，小雨拿出本子，记下了春天送给她的第一份礼物。</text>
+    <text x="34" y="356" class="tiny">短文为原创素材，用于阅读理解练习。</text>
+
+    <text x="0" y="452" class="body">1. 短文主要写了校园里的哪些景物？请写出三个。</text>
+    <rect x="28" y="472" width="1004" height="54" class="answer"/>
+    <text x="0" y="570" class="body">2. 用“____”画出一个比喻句，并说说把什么比作什么。</text>
+    <rect x="28" y="590" width="1004" height="54" class="answer"/>
+  </g>
+
+  <g transform="translate(90,1320)">
+    <rect x="0" y="0" width="1060" height="58" rx="16" fill="#5f7fc8"/>
+    <text x="28" y="39" class="secTitle">三、句子训练营</text>
+    <text x="0" y="102" class="body">1. 照样子，把句子写具体。</text>
+    <text x="30" y="146" class="body">例：燕子飞过操场。 → 几只燕子轻快地掠过热闹的操场。</text>
+    <text x="30" y="196" class="body">花儿开了。 → </text><line x1="190" y1="196" x2="1030" y2="196" class="line"/>
+    <text x="0" y="260" class="body">2. 小练笔：选择一种春天里的事物，写 3—4 句话。要写清它的样子或变化。</text>
+    <g transform="translate(28,290)">
+      <line x1="0" y1="0" x2="1004" y2="0" class="line"/>
+      <line x1="0" y1="52" x2="1004" y2="52" class="line"/>
+      <line x1="0" y1="104" x2="1004" y2="104" class="line"/>
+      <line x1="0" y1="156" x2="1004" y2="156" class="line"/>
+    </g>
+  </g>
+
+  <text x="92" y="1660" class="tiny">温馨提示：先读题，再作答；写完后检查错别字和标点。</text>
+  <text x="1000" y="1660" class="tiny">第 1 页 / 共 1 页</text>
+</svg>
