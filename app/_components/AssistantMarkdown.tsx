@@ -1,8 +1,7 @@
 "use client";
 
-import { memo, type ComponentPropsWithoutRef } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { memo } from "react";
+import { Streamdown, type Components } from "streamdown";
 
 /**
  * Assistant 消息里的 text part 专用 markdown 渲染器。
@@ -15,9 +14,6 @@ import remarkGfm from "remark-gfm";
  * 只对 assistant 消息用。User 消息保持纯文本，避免用户不小心打的 `*foo*`
  * 被吃成斜体，或者 code fence 意外生效。
  */
-
-// 类型 helper：ReactMarkdown 的 Components 里每个 tag 的 props 就是对应 HTML 元素的 props。
-type CodeProps = ComponentPropsWithoutRef<"code"> & { inline?: boolean };
 
 const components: Components = {
   // 段落：沿用 bubble 的字号 + leading，不加额外间距（bubble 外层已经 space-y-3）。
@@ -88,31 +84,25 @@ const components: Components = {
     </a>
   ),
 
-  // 行内代码 vs 代码块：react-markdown 里是同一个 `code` 组件，
-  // 靠 `inline` prop 或者有没有 `className` 区分（markdown fence 带语言时 className="language-xxx"）。
-  code: ({ inline, className, children, ...props }: CodeProps) => {
-    if (inline) {
-      return (
-        <code
-          className="rounded-sm border border-slate-200 bg-slate-50 px-1 py-[1px] font-mono text-[12.5px] text-slate-800"
-          {...props}
-        >
-          {children}
-        </code>
-      );
-    }
-    return (
-      <code
-        className={[
-          "block font-mono text-[12.5px] leading-[1.6] text-slate-800",
-          className ?? "",
-        ].join(" ")}
-        {...props}
-      >
-        {children}
-      </code>
-    );
-  },
+  inlineCode: ({ children, ...props }) => (
+    <code
+      className="rounded-sm border border-slate-200 bg-slate-50 px-1 py-[1px] font-mono text-[12.5px] text-slate-800"
+      {...props}
+    >
+      {children}
+    </code>
+  ),
+  code: ({ className, children, ...props }) => (
+    <code
+      className={[
+        "block font-mono text-[12.5px] leading-[1.6] text-slate-800",
+        className ?? "",
+      ].join(" ")}
+      {...props}
+    >
+      {children}
+    </code>
+  ),
   pre: ({ children }) => (
     <pre className="overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
       {children}
@@ -156,9 +146,9 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
 }) {
   return (
     <div className="space-y-2.5">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <Streamdown mode="streaming" components={components}>
         {text}
-      </ReactMarkdown>
+      </Streamdown>
     </div>
   );
 });

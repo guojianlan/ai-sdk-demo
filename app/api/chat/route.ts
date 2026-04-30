@@ -1,26 +1,23 @@
 import {
-  createAgentUIStreamResponse,
-  smoothStream,
-  type ToolSet,
+  createUIMessageStreamResponse,
+  type InferUIMessageChunk,
   type UIMessage,
 } from "ai";
+import { getRun, start } from "workflow/api";
 
-import {
-  createProjectEngineerAgent,
-  projectEngineerStaticToolset,
-} from "@/app/api/chat/agent-config";
-import { interactiveToolset } from "@/lib/interactive-tools";
+import { runAgentWorkflow } from "@/app/workflows/chat";
 import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
 import { sanitizeChatUIMessages } from "@/lib/chat/sanitize-messages";
 import {
+  compareAndSetActiveStreamId,
+  getActiveStreamId,
   loadSummary,
   saveMessages,
   saveSummary,
 } from "@/lib/chat-store";
-import * as activeStreams from "@/lib/active-streams";
 import {
   buildCompactionNotice,
   compactMessages,
@@ -28,9 +25,15 @@ import {
 } from "@/lib/compaction";
 import { env, requireGatewayApiKey } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
-import { createWeatherMCPClient } from "@/lib/mcp/weather-client";
+import {
+  createCancelableReadableStream,
+  dropReasoningChunks,
+  orderStatefulUIMessageChunks,
+} from "@/lib/workflow-readable";
 
-const segmenter = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
+type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
+
+const ACTIVE_STREAM_RECONCILIATION_MAX_ATTEMPTS = 3;
 
 export async function POST(request: Request) {
   try {
@@ -67,25 +70,29 @@ export async function POST(request: Request) {
   const workspaceAccessMode = normalizeWorkspaceAccessMode(
     body.workspaceAccessMode,
   );
-  const hasWorkspaceTools = workspaceAccessMode === "workspace-tools";
 
-  // MCP（天气）只在有工具的模式下拉起；失败 → 降级无 MCP 继续跑。
-  let mcpTools: ToolSet = {};
-  let closeMcp: (() => Promise<void>) | null = null;
-  if (hasWorkspaceTools) {
-    try {
-      const mcp = await createWeatherMCPClient();
-      mcpTools = await mcp.tools();
-      closeMcp = () => mcp.close();
-    } catch (error) {
-      console.warn(
-        "[chat] weather MCP init failed, continuing without it:",
-        error instanceof Error ? error.message : error,
+  const activeStreamId = getActiveStreamId(chatId);
+  if (activeStreamId) {
+    const existingStream = await reconcileExistingActiveStream(
+      chatId,
+      activeStreamId,
+    );
+    if (existingStream.action === "resume") {
+      return createUIMessageStreamResponse({
+        stream: existingStream.stream,
+        headers: { "x-workflow-run-id": existingStream.runId },
+      });
+    }
+    if (existingStream.action === "conflict") {
+      return Response.json(
+        { error: "Another workflow is already running for this chat." },
+        { status: 409 },
       );
     }
   }
 
   const fullSanitized = sanitizeChatUIMessages(body.messages ?? []);
+  saveMessages(chatId, fullSanitized);
 
   // --- P4-b context compaction 决策 ------------------------------------
   //
@@ -159,74 +166,84 @@ export async function POST(request: Request) {
   }
   // ---------------------------------------------------------------------
 
-  const agent = createProjectEngineerAgent({
-    // no-tools 模式也给交互工具：即使不让读文件，也允许 agent 追问用户意图。
-    tools: hasWorkspaceTools
-      ? { ...projectEngineerStaticToolset, ...mcpTools }
-      : { ...interactiveToolset },
-    onFinish: closeMcp ?? undefined,
-    conversationSummary: agentSummary,
-  });
-
-  // 注册 active stream：POST 跑的同时把 SSE 字节也 tee 一份到内存 buffer；
-  // 客户端 mid-stream 刷新时，GET /api/chat/[chatId]/stream 从这里订阅。
-  const live = activeStreams.register(chatId);
-  const encoder = new TextEncoder();
-
-  return createAgentUIStreamResponse({
-    agent,
-    // agent 只看截断后的 tail，不看被压缩掉的那段。
-    uiMessages: agentMessages,
-    originalMessages: agentMessages,
-    options: {
+  const run = await start(runAgentWorkflow, [
+    {
+      chatId,
+      agentMessages,
+      fullMessages: fullSanitized,
+      compactionNotice,
       workspaceRoot,
       workspaceName: body.workspaceName,
       workspaceAccessMode,
       bypassPermissions: body.bypassPermissions === true,
+      conversationSummary: agentSummary,
     },
-    experimental_transform: smoothStream({
-      chunking: segmenter,
-      delayInMs: 18,
-    }),
-    consumeSseStream: async ({ stream }) => {
-      const reader = stream.getReader();
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (typeof value === "string") {
-            live.push(encoder.encode(value));
-          }
-        }
-        live.end();
-      } catch (error) {
-        live.fail(error instanceof Error ? error : new Error(String(error)));
-      }
-    },
-    // onFinish 拿到的 messages = originalMessages（= agentMessages 截断后）+ 新 response。
-    // 但 DB 要存的是**全量**：fullSanitized（包括已被压缩的部分）+ 本轮压缩通知（如有）+ 新 response。
-    // 所以这里不能直接用 event.messages，要手动拼。
-    onFinish: ({ responseMessage }) => {
-      try {
-        const allMessages: UIMessage[] = [...fullSanitized];
-        if (compactionNotice) {
-          allMessages.push(compactionNotice);
-        }
-        allMessages.push(responseMessage as UIMessage);
-        saveMessages(chatId, allMessages);
-      } catch (error) {
-        console.error(
-          "[chat] saveMessages failed:",
-          error instanceof Error ? error.message : error,
-        );
-      }
-      live.cleanup();
-    },
-    onError: (error) => {
-      // 流级错误：也要清 active-stream 条目，不然它一直挂着。
-      live.fail(error instanceof Error ? error : new Error(String(error)));
-      live.cleanup();
-      return error instanceof Error ? error.message : "Unknown agent error";
-    },
+  ]);
+
+  const claimed = compareAndSetActiveStreamId(chatId, null, run.runId);
+  if (!claimed) {
+    await run.cancel().catch(() => undefined);
+    return Response.json(
+      { error: "Another workflow is already running for this chat." },
+      { status: 409 },
+    );
+  }
+
+  return createUIMessageStreamResponse({
+    stream: createCancelableReadableStream(
+      orderStatefulUIMessageChunks(
+        dropReasoningChunks(run.getReadable<ChatUIMessageChunk>()),
+      ),
+    ),
+    headers: { "x-workflow-run-id": run.runId },
   });
+}
+
+type ExistingActiveStreamResolution =
+  | {
+      action: "resume";
+      runId: string;
+      stream: ReadableStream<ChatUIMessageChunk>;
+    }
+  | { action: "ready" }
+  | { action: "conflict" };
+
+async function reconcileExistingActiveStream(
+  chatId: string,
+  activeStreamId: string,
+): Promise<ExistingActiveStreamResolution> {
+  let currentStreamId: string | null = activeStreamId;
+
+  for (
+    let attempt = 1;
+    currentStreamId && attempt <= ACTIVE_STREAM_RECONCILIATION_MAX_ATTEMPTS;
+    attempt++
+  ) {
+    try {
+      const run = getRun(currentStreamId);
+      const status = await run.status;
+      if (status === "running" || status === "pending") {
+        return {
+          action: "resume",
+          runId: currentStreamId,
+          stream: createCancelableReadableStream(
+            orderStatefulUIMessageChunks(
+              dropReasoningChunks(run.getReadable<ChatUIMessageChunk>()),
+            ),
+          ),
+        };
+      }
+    } catch {
+      // Run not found, inaccessible, or already collected. Try clearing below.
+    }
+
+    const cleared = compareAndSetActiveStreamId(chatId, currentStreamId, null);
+    if (cleared) {
+      return { action: "ready" };
+    }
+
+    currentStreamId = getActiveStreamId(chatId);
+  }
+
+  return currentStreamId ? { action: "conflict" } : { action: "ready" };
 }

@@ -370,10 +370,23 @@ export default function Home() {
     }
   }
 
+  async function handleStop() {
+    const sessionId = activeSessionId;
+    await stop();
+    if (!sessionId) return;
+    try {
+      await fetch(`/api/chat/${encodeURIComponent(sessionId)}/stop`, {
+        method: "POST",
+      });
+    } catch (stopError) {
+      console.error("Failed to stop workflow", stopError);
+    }
+  }
+
   async function handleSelectSession(sessionId: string) {
     if (sessionId === activeChatId) return;
     if (status === "streaming" || status === "submitted") {
-      await stop();
+      await handleStop();
     }
     setActiveChatId(sessionId);
     setDraft("");
@@ -385,7 +398,7 @@ export default function Home() {
     bypassPermissions,
   }: WorkspacePickerSubmit) {
     if (status === "streaming" || status === "submitted") {
-      await stop();
+      await handleStop();
     }
     const nextSession = createSession(
       workspace,
@@ -438,7 +451,7 @@ export default function Home() {
               activeAccessMode={activeAccessMode}
               status={status}
               statusLabel={statusLabel}
-              onStop={() => void stop()}
+              onStop={() => void handleStop()}
             />
 
             <div className="flex min-h-0 flex-1 flex-col">

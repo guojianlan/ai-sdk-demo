@@ -48,6 +48,15 @@ function getDb(): Database.Database {
       tokens_after    INTEGER NOT NULL,
       updated_at      INTEGER NOT NULL
     );
+
+    -- Workflow runtime state is intentionally separate from messages. The
+    -- active stream id points at the durable workflow run that can be resumed
+    -- or cancelled after the original POST request is gone.
+    CREATE TABLE IF NOT EXISTS chat_runtime_state (
+      session_id       TEXT PRIMARY KEY,
+      active_stream_id TEXT,
+      updated_at       INTEGER NOT NULL
+    );
   `);
   dbSingleton = db;
   return db;
@@ -91,6 +100,9 @@ export function deleteSession(sessionId: string): void {
   db.transaction(() => {
     db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM session_summaries WHERE session_id = ?").run(
+      sessionId,
+    );
+    db.prepare("DELETE FROM chat_runtime_state WHERE session_id = ?").run(
       sessionId,
     );
   })();
@@ -154,4 +166,69 @@ export function saveSummary(
       summary.tokensAfter,
       Date.now(),
     );
+}
+
+// --- Workflow active stream persistence --------------------------------
+
+export function getActiveStreamId(sessionId: string): string | null {
+  const row = getDb()
+    .prepare<[string], { active_stream_id: string | null }>(
+      `SELECT active_stream_id
+         FROM chat_runtime_state
+        WHERE session_id = ?`,
+    )
+    .get(sessionId);
+  return row?.active_stream_id ?? null;
+}
+
+export function setActiveStreamId(
+  sessionId: string,
+  activeStreamId: string | null,
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO chat_runtime_state
+         (session_id, active_stream_id, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         active_stream_id = excluded.active_stream_id,
+         updated_at       = excluded.updated_at`,
+    )
+    .run(sessionId, activeStreamId, Date.now());
+}
+
+export function compareAndSetActiveStreamId(
+  sessionId: string,
+  expectedStreamId: string | null,
+  nextStreamId: string | null,
+): boolean {
+  const db = getDb();
+  const now = Date.now();
+
+  if (expectedStreamId === null) {
+    const result = db
+      .prepare(
+        `INSERT INTO chat_runtime_state
+           (session_id, active_stream_id, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET
+           active_stream_id = excluded.active_stream_id,
+           updated_at       = excluded.updated_at
+         WHERE chat_runtime_state.active_stream_id IS NULL`,
+      )
+      .run(sessionId, nextStreamId, now);
+    return result.changes > 0;
+  }
+
+  const result = db
+    .prepare(
+      `UPDATE chat_runtime_state
+          SET active_stream_id = ?,
+              updated_at       = ?
+        WHERE session_id = ?
+          AND active_stream_id = ?`,
+    )
+    .run(nextStreamId, now, sessionId, expectedStreamId);
+
+  return result.changes > 0;
 }
