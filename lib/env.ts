@@ -88,6 +88,10 @@ const compactionKeepRecentMessages = parseIntOr(
   8,
 );
 
+// 外层 workflow loop 的步数上限：每"步"= 一次 LLM 调用 + 它本轮的 tool 执行。
+// 默认 500 对齐 open-agents；普通对话远到不了，主要防失控死循环。
+const outerStepLimit = parseIntOr(process.env.CHAT_OUTER_STEP_LIMIT, 500);
+
 export const env = {
   isProduction,
   /**
@@ -108,6 +112,8 @@ export const env = {
     thresholdTokens: compactionThresholdTokens,
     keepRecentMessages: compactionKeepRecentMessages,
   },
+  /** 主聊天 workflow 外层 for 循环的步数上限（对齐 open-agents 的 maxSteps=500）。 */
+  outerStepLimit,
 } as const;
 
 /**

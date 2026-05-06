@@ -1,8 +1,10 @@
 import {
   convertToModelMessages,
-  generateId,
+  generateId as generateIdAi,
   smoothStream,
+  type FinishReason,
   type InferUIMessageChunk,
+  type ModelMessage,
   type ToolSet,
   type UIMessage,
 } from "ai";
@@ -18,8 +20,10 @@ import {
   saveMessages,
 } from "@/lib/chat-store";
 import type { WorkspaceAccessMode } from "@/lib/chat-access-mode";
+import { env } from "@/lib/env";
 import { interactiveToolset } from "@/lib/interactive-tools";
 import { createWeatherMCPClient } from "@/lib/mcp/weather-client";
+import { shouldPauseForToolInteraction } from "@/lib/workflow-pause";
 
 export type ChatWorkflowOptions = {
   chatId: string;
@@ -35,23 +39,137 @@ export type ChatWorkflowOptions = {
 
 type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
 
+type StepResult = {
+  responseMessage: UIMessage | null;
+  responseModelMessages: ModelMessage[];
+  finishReason: FinishReason | undefined;
+  aborted: boolean;
+};
+
+/**
+ * 主聊天 workflow（对齐 open-agents apps/web/app/workflows/chat.ts）。
+ *
+ * 设计：
+ * - 内层 `agent.stream()` 一次只跑 1 步（builder 里固定 stopWhen=1），所以
+ *   多步循环必须由这里手写一个 for loop，由 env.outerStepLimit（默认 500）控制上限。
+ * - 每步是一个 "use step"——workflow durable 检查点，便于失败 resume。
+ * - assistantId 在循环外预生成一次，所有步共用，UI 看到的是同一条 assistant 消息
+ *   不断追加内容（而不是冒出 N 条独立消息）。
+ * - 循环出口：finishReason !== "tool-calls" / 命中 shouldPauseForToolInteraction（
+ *   approval 弹窗 / interactive tool 等待用户回复）/ 触顶 outerStepLimit / 被 abort。
+ * - 按步落库：每步完成都调一次 saveMessages，UI 刷新立刻拿到截至本步的状态。
+ *   compactionNotice 只插一次（因为它是"本轮压缩"的标记，不重复）。
+ */
 export async function runAgentWorkflow(options: ChatWorkflowOptions) {
   "use workflow";
 
   const { workflowRunId } = getWorkflowMetadata();
 
   try {
-    await runAgentStep(options, workflowRunId);
+    await runAgentLoop(options, workflowRunId);
   } finally {
     await clearActiveStream(options.chatId, workflowRunId);
     await closeWorkflowStream();
   }
 }
 
+async function runAgentLoop(
+  options: ChatWorkflowOptions,
+  workflowRunId: string,
+): Promise<void> {
+  const assistantId = await reserveAssistantId();
+
+  // 把现有 UI 消息转成 model messages；后续每步把新的 response model messages 追加进去。
+  // 注意：这里用空 toolset 转换是 ok 的——convert 只关心结构，不会去执行 tool。
+  let modelMessages: ModelMessage[] = await convertToModelMessages(
+    options.agentMessages,
+    { ignoreIncompleteToolCalls: true },
+  );
+
+  // 预先发一次 start 把"新 assistant message"的开始信号通知给 UI。
+  // 后续每步的 toUIMessageStream 都设 sendStart:false / sendFinish:false，
+  // 所有步的内容都追加到同一条 assistantId 上。
+  await sendStartChunk(assistantId);
+
+  let pendingResponseMessage: UIMessage | null = null;
+  let exhaustedSteps = false;
+  let finalFinishReason: FinishReason | undefined;
+
+  const limit = env.outerStepLimit;
+
+  for (let step = 0; step < limit; step++) {
+    // toUIMessageStream 的 originalMessages 用于 message id 基准：
+    // - step 0：用 options.agentMessages（用户消息历史）
+    // - step >0：用上一轮的 pendingResponseMessage，让 stream 继续追加到同一条 assistant 消息
+    const originalMessagesForStep: UIMessage[] = pendingResponseMessage
+      ? [pendingResponseMessage]
+      : options.agentMessages;
+
+    const result = await runAgentStep(
+      options,
+      workflowRunId,
+      modelMessages,
+      originalMessagesForStep,
+      assistantId,
+      step,
+    );
+
+    if (result.responseModelMessages.length > 0) {
+      modelMessages = [...modelMessages, ...result.responseModelMessages];
+    }
+
+    if (result.responseMessage) {
+      pendingResponseMessage = result.responseMessage;
+      // 同一个 assistantId 的快照：每步都是这条消息的"截至本步"完整版，
+      // 累积保存只需要最新这一份。
+      const allMessages: UIMessage[] = [...options.fullMessages];
+      if (options.compactionNotice) {
+        allMessages.push(options.compactionNotice);
+      }
+      allMessages.push(pendingResponseMessage);
+      saveMessages(options.chatId, allMessages);
+    }
+
+    finalFinishReason = result.finishReason;
+
+    const isToolCallContinuation = result.finishReason === "tool-calls";
+    const needsPause = shouldPauseForToolInteraction(
+      result.responseMessage?.parts ?? [],
+    );
+
+    console.log(
+      `[workflow/chat] chat=${options.chatId} step=${step + 1}/${limit} finishReason=${result.finishReason ?? "?"} pause=${needsPause} aborted=${result.aborted}`,
+    );
+
+    if (result.aborted) break;
+    if (!isToolCallContinuation) break;
+    if (needsPause) break;
+
+    if (step + 1 >= limit) {
+      exhaustedSteps = true;
+      break;
+    }
+  }
+
+  if (exhaustedSteps) {
+    console.warn(
+      `[workflow/chat] chat=${options.chatId} hit OUTER_STEP_LIMIT=${limit}; loop terminated`,
+    );
+  }
+
+  // 不管以什么原因退出循环，都要发一个 finish 关掉这条 assistant 消息——
+  // 否则 UI 会一直显示 streaming 状态。
+  await sendFinishChunk(finalFinishReason ?? "stop");
+}
+
 async function runAgentStep(
   options: ChatWorkflowOptions,
   workflowRunId: string,
-) {
+  modelMessages: ModelMessage[],
+  originalMessagesForStep: UIMessage[],
+  assistantId: string,
+  stepIndex: number,
+): Promise<StepResult> {
   "use step";
 
   const hasWorkspaceTools = options.workspaceAccessMode === "workspace-tools";
@@ -78,11 +196,6 @@ async function runAgentStep(
     conversationSummary: options.conversationSummary,
   });
 
-  const modelMessages = await convertToModelMessages(options.agentMessages, {
-    tools: agent.tools,
-    ignoreIncompleteToolCalls: true,
-  });
-
   const abortController = new AbortController();
   const stopMonitor = startStopMonitor(workflowRunId, abortController);
   let responseMessage: UIMessage | null = null;
@@ -106,15 +219,17 @@ async function runAgentStep(
     const writer = getWritable<ChatUIMessageChunk>().getWriter();
     try {
       for await (const part of result.toUIMessageStream<UIMessage>({
-        originalMessages: options.agentMessages,
-        generateMessageId: generateId,
-        // Workflow streams can be re-read by reconnect/auto-submit paths. AI SDK
-        // reasoning chunks are stateful (`reasoning-start` must be seen before
-        // every delta), so keep Phase 1 conservative and stream only visible text
-        // plus tool state. We can re-enable reasoning once we track stream cursors.
+        originalMessages: originalMessagesForStep,
+        generateMessageId: () => assistantId,
+        // 每步都不发 start/finish——start 在 workflow loop 开头发一次，
+        // finish 在 loop 结束统一发一次，这样 UI 看到的是连贯的一条 assistant 消息。
+        sendStart: false,
+        sendFinish: false,
+        // Workflow 流可被 reconnect/auto-submit 重读。AI SDK reasoning chunk 是有状态的
+        // (`reasoning-start` 必须在 delta 之前)，目前先稳一点只发 visible text + tool state。
         sendReasoning: false,
-        onFinish: ({ responseMessage: finishedResponseMessage }) => {
-          responseMessage = finishedResponseMessage;
+        onFinish: ({ responseMessage: finished }) => {
+          responseMessage = finished;
         },
         onError: (error) =>
           error instanceof Error ? error.message : "Unknown agent error",
@@ -125,18 +240,58 @@ async function runAgentStep(
       writer.releaseLock();
     }
 
-    if (responseMessage) {
-      const allMessages: UIMessage[] = [...options.fullMessages];
-      if (options.compactionNotice) {
-        allMessages.push(options.compactionNotice);
-      }
-      allMessages.push(responseMessage);
-      saveMessages(options.chatId, allMessages);
+    const [finishReason, response] = await Promise.all([
+      result.finishReason,
+      result.response,
+    ]);
+
+    return {
+      responseMessage,
+      responseModelMessages: response?.messages ?? [],
+      finishReason,
+      aborted: false,
+    };
+  } catch (error) {
+    if (isAbortError(error)) {
+      return {
+        responseMessage,
+        responseModelMessages: [],
+        finishReason: "stop",
+        aborted: true,
+      };
     }
+    throw error;
   } finally {
+    // stepIndex 留在签名里方便日志/调试；当前没真用上。
+    void stepIndex;
     stopMonitor.stop();
     await stopMonitor.done;
     await closeMcp?.();
+  }
+}
+
+async function reserveAssistantId(): Promise<string> {
+  "use step";
+  return generateIdAi();
+}
+
+async function sendStartChunk(messageId: string): Promise<void> {
+  "use step";
+  const writer = getWritable<ChatUIMessageChunk>().getWriter();
+  try {
+    await writer.write({ type: "start", messageId } as ChatUIMessageChunk);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function sendFinishChunk(finishReason: FinishReason): Promise<void> {
+  "use step";
+  const writer = getWritable<ChatUIMessageChunk>().getWriter();
+  try {
+    await writer.write({ type: "finish", finishReason } as ChatUIMessageChunk);
+  } finally {
+    writer.releaseLock();
   }
 }
 
@@ -184,4 +339,13 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" ||
+      (typeof error.message === "string" &&
+        error.message.toLowerCase().includes("abort")))
+  );
 }

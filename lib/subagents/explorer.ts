@@ -41,7 +41,7 @@ const explorerPersona = [
   `约束：`,
   `- 你不能反问。遇到模糊先做合理假设，最后在摘要末尾注明「假设 X，若不是请澄清」。`,
   `- 不要复述文件内容；回答要有你的判断，不是文件片段堆砌。`,
-  `- 最多跑 20 步工具调用；到上限还没答清，就把当前能给出的结论交回并标注「调查未尽」。`,
+  `- 最多跑 100 步工具调用；到上限还没答清，就把当前能给出的结论交回并标注「调查未尽」。`,
 ].join("\n");
 
 const explorerCallOptionsSchema = z.object({
@@ -52,9 +52,9 @@ const explorerCallOptionsSchema = z.object({
 const explorerAgent = new ToolLoopAgent({
   model: instrumentModel(gateway.chatModel(gatewayModelId)),
   instructions: explorerPersona,
-  // 20 步够 list_files + search_code 来回 + 5-10 次 read_file + 总结。
-  // 这是 open-agents SUBAGENT_STEP_LIMIT = 50 的一半，适合我们这个规模。
-  stopWhen: stepCountIs(20),
+  // 100 步对齐 open-agents SUBAGENT_STEP_LIMIT。
+  // 远超普通调查需求（典型 5-15 步即可），上限主要防失控；正常任务远不会触顶。
+  stopWhen: stepCountIs(100),
   callOptionsSchema: explorerCallOptionsSchema,
   prepareCall: async ({ options, ...settings }) => {
     return {

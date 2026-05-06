@@ -56,8 +56,6 @@ export type ChatAgentConfig<
   ) => Record<string, unknown>;
   /** 已经 resolve 好的工具集（动态 tool 如 MCP 由调用方在传入前合并）。 */
   tools: Tools;
-  /** stopWhen 的步数上限。 */
-  stepLimit: number;
   /** agent loop 结束时触发（MCP 子进程清理等）。 */
   onFinish?: () => void | Promise<void>;
   /**
@@ -74,7 +72,10 @@ export function createChatAgent<
   return new ToolLoopAgent<Options, Tools>({
     model: config.model,
     instructions: config.persona,
-    stopWhen: stepCountIs(config.stepLimit),
+    // 内层 loop 上限固定为 1：每次 agent.stream 只跑"一次 LLM 调用 + 它本轮的 tool 执行"，
+    // 真正的多步循环在 app/workflows/chat.ts 的外层 for 里手写，由 OUTER_STEP_LIMIT 控制。
+    // 这样可以在每步之间做 saveMessages / shouldPauseForToolInteraction / abort 检查。
+    stopWhen: stepCountIs(1),
     callOptionsSchema: config.callOptionsSchema,
     tools: config.tools,
     prepareCall: async ({ options, ...settings }) => {

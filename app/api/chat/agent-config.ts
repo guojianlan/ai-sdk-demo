@@ -151,7 +151,6 @@ export function createProjectEngineerAgent(params: {
       bypassPermissions: options.bypassPermissions,
     }),
     tools: params.tools,
-    stepLimit: 16,
     onFinish: params.onFinish,
     conversationSummary: params.conversationSummary,
   });
