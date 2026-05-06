@@ -11,6 +11,7 @@ import { env } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
 import { interactiveToolset } from "@/lib/interactive-tools";
 import { planToolset } from "@/lib/plan-tools";
+import { skillToolset, type SkillMetadata } from "@/lib/skills";
 import { subagentToolset } from "@/lib/subagents/explorer";
 import { workspaceToolset } from "@/lib/workspace-tools";
 import { writeToolset } from "@/lib/write-tools";
@@ -111,11 +112,13 @@ export const projectEngineerCallOptionsSchema = z.object({
 });
 
 /**
- * 只读 + 写入 + 子 agent + 交互 + plan 五套自家工具集。MCP 动态工具由路由在请求时合并。
+ * 只读 + 写入 + 子 agent + 交互 + plan + skill 六套自家工具集。MCP 动态工具由路由在请求时合并。
  *
  * 注意：
  * - interactiveToolset 在所有 access mode 下都可用（即使 `no-tools` 模式也允许 agent 追问）
  * - planToolset（update_plan）同样通用——多步任务的进度展示即使没工具也有价值
+ * - skillToolset（skill）是 hybrid skill 系统的入口；workflow 在创建 agent 时通过
+ *   experimental_context.skills 注入当前可用 skill 列表，工具按 name 读 SKILL.md body
  */
 export const projectEngineerStaticToolset = {
   ...workspaceToolset,
@@ -123,17 +126,23 @@ export const projectEngineerStaticToolset = {
   ...subagentToolset,
   ...interactiveToolset,
   ...planToolset,
+  ...skillToolset,
 };
 
 /**
  * 用上面这套 persona / rules / schema / toolset 构造一个主聊天 agent。
  * 路由只负责决定 "这次请求加哪些额外工具"（MCP / 无）+ MCP 清理闭包。
+ *
+ * skills 由 workflow 在创建 agent 时通过 `getSkills()` 取出后传入，作为 system prompt
+ * 的一层 + skill 工具运行时 context；不传或空数组 = skill 系统未启用。
  */
 export function createProjectEngineerAgent(params: {
   tools: ToolSet;
   onFinish?: () => void | Promise<void>;
   /** P4-b：压缩过的老对话摘要（可选）。 */
   conversationSummary?: string | null;
+  /** 当前会话可用 skill 列表（只 metadata，body 按需读盘）。 */
+  skills?: SkillMetadata[] | null;
 }) {
   return createChatAgent({
     model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
@@ -153,5 +162,6 @@ export function createProjectEngineerAgent(params: {
     tools: params.tools,
     onFinish: params.onFinish,
     conversationSummary: params.conversationSummary,
+    skills: params.skills,
   });
 }

@@ -5,6 +5,7 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { z } from "zod";
 
 import { buildSystemPrompt } from "@/lib/chat-agent/system-prompt";
+import type { SkillMetadata } from "@/lib/skills";
 import { normalizeWorkspaceRoot } from "@/lib/workspaces";
 
 /**
@@ -63,6 +64,13 @@ export type ChatAgentConfig<
    * 路由在 POST handler 里决定是否压缩，把结果传进来。null / undefined = 没压过。
    */
   conversationSummary?: string | null;
+  /**
+   * 当前会话可用的 skill 列表（已 discovery 完成）。会做两件事：
+   * 1. names + descriptions 进 system prompt 给 model 看；
+   * 2. 通过 experimental_context.skills 注入给 `skill` 工具，按需读 body。
+   * 不传或空数组 = 没启用 skill 系统，相关 prompt 段落跳过。
+   */
+  skills?: SkillMetadata[] | null;
 };
 
 export function createChatAgent<
@@ -101,17 +109,24 @@ export function createChatAgent<
         persona: config.persona,
         developerRules,
         workspaceRoot,
+        skills: config.skills ?? null,
         conversationSummary: config.conversationSummary ?? null,
+      });
+
+      const baseContext = config.buildExperimentalContext({
+        options,
+        workspaceRoot,
+        workspaceName,
       });
 
       return {
         ...settings,
         instructions,
-        experimental_context: config.buildExperimentalContext({
-          options,
-          workspaceRoot,
-          workspaceName,
-        }),
+        experimental_context: {
+          ...baseContext,
+          // skill 工具按 ctx.skills 找当前可调 skill，按 name 读 body 返回
+          skills: config.skills ?? [],
+        },
       };
     },
     onFinish: config.onFinish

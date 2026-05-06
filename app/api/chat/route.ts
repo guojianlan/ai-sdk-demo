@@ -25,6 +25,7 @@ import {
 } from "@/lib/compaction";
 import { env, requireGatewayApiKey } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
+import { getSkills } from "@/lib/skills";
 import {
   createCancelableReadableStream,
   dropReasoningChunks,
@@ -166,6 +167,10 @@ export async function POST(request: Request) {
   }
   // ---------------------------------------------------------------------
 
+  // Skill discovery 进程内缓存：每次请求拿一份最新 metadata 列表（body 不在这里读）。
+  // 这调用很轻——首次扫盘后 cached，后续就是 Map 命中。
+  const skills = await getSkills();
+
   const run = await start(runAgentWorkflow, [
     {
       chatId,
@@ -177,6 +182,7 @@ export async function POST(request: Request) {
       workspaceAccessMode,
       bypassPermissions: body.bypassPermissions === true,
       conversationSummary: agentSummary,
+      skills,
     },
   ]);
 

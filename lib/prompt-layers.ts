@@ -18,7 +18,8 @@
  *   2. Developer rules        —— 运行期规则，次之
  *   3. Environment context    —— 客观环境事实
  *   4. User instructions      —— 用户项目规则（AGENTS.md）
- *   5. Conversation summary   —— P4-b compaction 的 handoff 摘要（可选，有才加）
+ *   5. Available skills       —— 当前可触发的 skill 清单（仅 name+description；body 通过 `skill` 工具按需拉）
+ *   6. Conversation summary   —— P4-b compaction 的 handoff 摘要（可选，有才加）
  *
  * 详见 docs/codex-prompt-layering.md 的对照表。
  */
@@ -43,6 +44,14 @@ export type PromptLayers = {
    */
   userInstructions: string | null;
   /**
+   * 当前对话可用的 skill 清单（已组装好的 markdown，含 names + descriptions
+   * 以及如何触发的指南）。null 表示这条 chat 没启用 skill 系统。
+   *
+   * 注意：这里只塞 metadata，不塞 SKILL.md body。完整 body 由 model 在需要时
+   * 调 `skill` 工具按需拉，避免一次性把所有 skill 内容塞进 prompt 烧 token。
+   */
+  availableSkills: string | null;
+  /**
    * P4-b：对话太长触发 compaction 后，把 handoff summary 注入成单独一层。
    * 没压缩过的 session 这里是 null，这层会被跳过。
    *
@@ -58,6 +67,7 @@ const LAYER_HEADINGS = {
   developerRules: "# Developer rules",
   environmentContext: "# Environment context",
   userInstructions: "# User project instructions",
+  availableSkills: "# Available skills",
   conversationSummary: "# Conversation summary so far",
 } as const;
 
@@ -83,6 +93,9 @@ export function assemblePromptLayers(layers: PromptLayers): string {
   pushSection(LAYER_HEADINGS.environmentContext, layers.environmentContext);
   if (layers.userInstructions) {
     pushSection(LAYER_HEADINGS.userInstructions, layers.userInstructions);
+  }
+  if (layers.availableSkills) {
+    pushSection(LAYER_HEADINGS.availableSkills, layers.availableSkills);
   }
   if (layers.conversationSummary) {
     pushSection(LAYER_HEADINGS.conversationSummary, layers.conversationSummary);
@@ -111,6 +124,13 @@ export function explainPromptLayers(layers: PromptLayers): {
       "userInstructions",
       LAYER_HEADINGS.userInstructions,
       layers.userInstructions,
+    ]);
+  }
+  if (layers.availableSkills) {
+    entries.push([
+      "availableSkills",
+      LAYER_HEADINGS.availableSkills,
+      layers.availableSkills,
     ]);
   }
   if (layers.conversationSummary) {

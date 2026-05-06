@@ -1,22 +1,26 @@
 import { assemblePromptLayers } from "@/lib/prompt-layers";
 import { buildSessionPrimer } from "@/lib/session-primer";
+import type { SkillMetadata } from "@/lib/skills";
 
 /**
  * buildSystemPrompt —— 构造 system instructions 的唯一入口。
  *
  * 先用 session-primer 读出环境上下文（cwd / shell / date / timezone）和工作区 AGENTS.md，
- * 再通过 `assemblePromptLayers` 把 4-5 层（persona / developerRules / envContext /
- * userInstructions [+ conversationSummary]）拼成最终字符串。
+ * 再通过 `assemblePromptLayers` 把 5-7 层（persona / developerRules / envContext /
+ * userInstructions [+ availableSkills] [+ conversationSummary]）拼成最终字符串。
  *
  * - `persona`：稳定身份（路由级常量）
  * - `developerRules`：运行期规则（依赖当前 access mode / tool mode / 工作区名）
  * - `workspaceRoot`：已 normalize 过的绝对路径
+ * - `skills`（可选）：当前可用 skill 列表，由调用方从 `getSkills()` 拿；只把
+ *   names + descriptions 进 prompt，body 由 `skill` 工具按需拉
  * - `conversationSummary`（可选）：P4-b compaction 的 handoff 摘要；没压过就传 null
  */
 export async function buildSystemPrompt(input: {
   persona: string;
   developerRules: string;
   workspaceRoot: string;
+  skills?: SkillMetadata[] | null;
   conversationSummary?: string | null;
 }): Promise<string> {
   const primer = await buildSessionPrimer({
@@ -33,11 +37,65 @@ export async function buildSystemPrompt(input: {
       ].join("\n")
     : null;
 
+  const skillsSection = buildSkillsSection(input.skills ?? null);
+
   return assemblePromptLayers({
     persona: input.persona,
     developerRules: input.developerRules,
     environmentContext: primer.environmentContext,
     userInstructions: primer.userInstructions,
+    availableSkills: skillsSection,
     conversationSummary: summarySection,
   });
+}
+
+/**
+ * 把 skill 列表渲染成 system prompt 段落。返回 null 表示没有可用 skill（这层会被跳过）。
+ *
+ * 设计考虑：
+ * - 每个 skill 一行 `- name: description`，让 model 看一眼就能 skim。
+ * - 头部明确告知"调 `skill` 工具拉 body"——避免 model 直接幻觉 skill 内容。
+ * - 给一段简短的"何时该调"指南：当用户输 `/<name>` 或问题命中 description 关键词。
+ *
+ * 参考：tmp/open-agents-main/packages/agent/system-prompt.ts:370-413 buildSkillsPrompt
+ */
+export function buildSkillsSection(skills: SkillMetadata[] | null): string | null {
+  if (!skills || skills.length === 0) return null;
+
+  // user-invocable !== false 的 skill 都允许 slash-command 触发；显式标 false 的就不能
+  const userInvocableHint = skills.some(
+    (s) => s.options.userInvocable === false,
+  )
+    ? "- Some skills are not user-invocable (the user cannot trigger them via /<name>); they are auto-applied when relevant."
+    : "";
+
+  // disable-model-invocation 的 skill 模型不能主动调，得等用户 /<name>
+  const modelGatedHint = skills.some(
+    (s) => s.options.disableModelInvocation === true,
+  )
+    ? '- Skills marked as "model-gated" below cannot be invoked by you directly — wait for the user to type /<name>.'
+    : "";
+
+  const intro = [
+    "Use the `skill` tool to load any of the skills listed below. Each skill is a focused playbook of instructions that extends what you can do in this conversation.",
+    "",
+    "When to invoke:",
+    '- The user types "/<skill-name>" — invoke that skill IMMEDIATELY before any other tool.',
+    "- The user's request strongly matches a skill's description — invoke and follow its instructions.",
+    "- Otherwise, prefer your standard tools.",
+    userInvocableHint,
+    modelGatedHint,
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+
+  const lines = skills.map((s) => {
+    const flags: string[] = [];
+    if (s.options.disableModelInvocation) flags.push("model-gated");
+    if (s.options.userInvocable === false) flags.push("auto-only");
+    const suffix = flags.length > 0 ? ` _(${flags.join(", ")})_` : "";
+    return `- \`${s.name}\`${suffix}: ${s.description}`;
+  });
+
+  return [intro, "", "Available skills:", ...lines].join("\n");
 }

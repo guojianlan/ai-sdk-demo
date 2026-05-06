@@ -23,6 +23,7 @@ import type { WorkspaceAccessMode } from "@/lib/chat-access-mode";
 import { env } from "@/lib/env";
 import { interactiveToolset } from "@/lib/interactive-tools";
 import { createWeatherMCPClient } from "@/lib/mcp/weather-client";
+import type { SkillMetadata } from "@/lib/skills";
 import { shouldPauseForToolInteraction } from "@/lib/workflow-pause";
 
 export type ChatWorkflowOptions = {
@@ -35,6 +36,8 @@ export type ChatWorkflowOptions = {
   workspaceAccessMode: WorkspaceAccessMode;
   bypassPermissions: boolean;
   conversationSummary: string | null;
+  /** 当前会话可用 skill 列表（POST handler 调 getSkills() 取得后传入）。 */
+  skills: SkillMetadata[];
 };
 
 type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
@@ -194,6 +197,7 @@ async function runAgentStep(
       ? { ...projectEngineerStaticToolset, ...mcpTools }
       : { ...interactiveToolset },
     conversationSummary: options.conversationSummary,
+    skills: options.skills,
   });
 
   const abortController = new AbortController();
