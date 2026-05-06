@@ -1,13 +1,10 @@
-import { execFile } from "node:child_process";
-import { promises as fs, type Dirent } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { rgPath } from "@vscode/ripgrep";
 
 import { env } from "@/lib/env";
-
-const execFileAsync = promisify(execFile);
+import type { Sandbox } from "@/lib/sandbox/interface";
 
 // 大型生成目录和依赖目录通常噪声很多，也会拖慢遍历速度。
 const IGNORED_DIRECTORY_NAMES = new Set([
@@ -170,13 +167,18 @@ function shouldIgnoreEntry(name: string) {
 /**
  * 用于 UI 和工具调用的受限目录遍历。
  * depth 和 limit 两个限制可以让返回结果更稳定，避免把大量无关内容塞给模型。
+ *
+ * P5: 改走 sandbox.readdir / sandbox.stat。`sandbox.workingDirectory` 即原来的
+ * `workspaceRoot`；resolveWorkspacePath 仍负责 `..` escape 校验（local sandbox
+ * 内部也会再校一次，双重防御）。
  */
 export async function listWorkspaceEntries(
-  workspaceRoot: string,
+  sandbox: Sandbox,
   relativePath = ".",
   depth = 2,
   limit = 200,
 ): Promise<WorkspaceEntry[]> {
+  const workspaceRoot = sandbox.workingDirectory;
   const results: WorkspaceEntry[] = [];
   const rootPath = resolveWorkspacePath(workspaceRoot, relativePath);
 
@@ -185,7 +187,7 @@ export async function listWorkspaceEntries(
       return;
     }
 
-    const stats = await fs.stat(currentAbsolutePath);
+    const stats = await sandbox.stat(currentAbsolutePath);
 
     if (stats.isFile()) {
       results.push({
@@ -197,7 +199,7 @@ export async function listWorkspaceEntries(
       return;
     }
 
-    const directoryEntries = await fs.readdir(currentAbsolutePath, {
+    const directoryEntries = await sandbox.readdir(currentAbsolutePath, {
       withFileTypes: true,
     });
 
@@ -240,7 +242,7 @@ export async function listWorkspaceEntries(
       }
 
       if (entry.isFile()) {
-        const entryStats = await fs.stat(nextAbsolutePath);
+        const entryStats = await sandbox.stat(nextAbsolutePath);
 
         results.push({
           path: nextRelativePath,
@@ -259,15 +261,24 @@ export async function listWorkspaceEntries(
 /**
  * 从工作区读取 UTF-8 文本文件，并通过字符上限控制返回体积，
  * 让工具结果保持在模型和流式 UI 都能承受的范围内。
+ *
+ * P5: 改走 sandbox.readFile。
+ *
+ * 二进制检测的妥协：sandbox.readFile 只返回 string（utf-8 解码后）。原本用
+ * `buffer.subarray(0, 1024).includes(0)` 检 NUL 字节，现在只能检字符串里的
+ * `\u0000`——utf-8 解码会把 0x00 字节保留为 U+0000 字符，所以对二进制文件
+ * 仍然能命中（首 1024 字符里通常会有）。比 buffer 检测稍弱但够用。
  */
 export async function readWorkspaceFile(
-  workspaceRoot: string,
+  sandbox: Sandbox,
   relativePath: string,
   maxChars = 16000,
 ) {
+  const workspaceRoot = sandbox.workingDirectory;
   const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
-  const buffer = await fs.readFile(absolutePath);
-  const maybeBinary = buffer.subarray(0, 1024).includes(0);
+  const content = await sandbox.readFile(absolutePath, "utf-8");
+
+  const maybeBinary = content.slice(0, 1024).includes("\u0000");
 
   if (maybeBinary) {
     return {
@@ -278,8 +289,6 @@ export async function readWorkspaceFile(
       totalChars: 0,
     };
   }
-
-  const content = buffer.toString("utf8");
 
   return {
     path: path.relative(workspaceRoot, absolutePath),
@@ -319,22 +328,26 @@ function escapeLiteral(query: string): string {
 /**
  * 纯 Node 的代码搜索兜底。
  *
- * 当系统里没装 ripgrep 时（`spawn rg ENOENT`），就用这个实现。
- * 性能不如 rg，但胜在零外部依赖，开箱即用。
+ * 当 ripgrep 二进制找不到时（`spawn rg ENOENT`），就用这个实现。
+ * 性能不如 rg，但胜在零外部依赖。
+ *
+ * P5: 改走 sandbox.readdir / sandbox.stat / sandbox.readFile。二进制检测同
+ * `readWorkspaceFile`：靠字符串里的 `\u0000` 命中（utf-8 保留 NUL 字节）。
  *
  * 策略：
- * - 递归遍历 workspaceRoot，跳过 IGNORED_DIRECTORY_NAMES 里的目录
+ * - 递归遍历 workingDirectory，跳过 IGNORED_DIRECTORY_NAMES 里的目录
  * - smart-case：query 里有大写字母 → 大小写敏感；否则忽略大小写
  * - 每个文件最多 1 个匹配（mimic rg 的 --max-count=1 per-file 风格，让结果在多个文件上铺开）
- * - 单文件 > 1MB 或首 1KB 出现 NUL 字节 → 当作二进制跳过
+ * - 单文件 > 1MB 或首 1024 字符里有 NUL → 当作二进制跳过
  * - 命中 `maxResults` 就提前 return，不跑完全盘
  */
 async function searchWorkspaceWithNode(
-  workspaceRoot: string,
+  sandbox: Sandbox,
   query: string,
   maxResults: number,
   glob?: string,
 ): Promise<WorkspaceSearchResult[]> {
+  const workspaceRoot = sandbox.workingDirectory;
   const caseInsensitive = !/[A-Z]/.test(query);
   const pattern = new RegExp(
     escapeLiteral(query),
@@ -348,9 +361,9 @@ async function searchWorkspaceWithNode(
       return;
     }
 
-    let entries: Dirent[];
+    let entries: Awaited<ReturnType<typeof sandbox.readdir>>;
     try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
+      entries = await sandbox.readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
@@ -378,23 +391,21 @@ async function searchWorkspaceWithNode(
         continue;
       }
 
-      let buffer: Buffer;
+      let content: string;
       try {
-        const stats = await fs.stat(full);
+        const stats = await sandbox.stat(full);
         if (stats.size > 1024 * 1024) {
           continue;
         }
-        buffer = await fs.readFile(full);
+        content = await sandbox.readFile(full, "utf-8");
       } catch {
         continue;
       }
 
-      // 朴素二进制检测：首 1KB 出现 NUL 字节则认为是二进制。
-      if (buffer.subarray(0, Math.min(1024, buffer.length)).includes(0)) {
+      if (content.slice(0, 1024).includes("\u0000")) {
         continue;
       }
 
-      const content = buffer.toString("utf8");
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const match = pattern.exec(lines[i]);
@@ -417,59 +428,68 @@ async function searchWorkspaceWithNode(
 }
 
 /**
+ * 单引号 shell 转义：用 `'foo'\\''bar'` 模式包裹任意字符串，绝对安全。
+ * 用于把 rgPath / query / glob 拼成单条 command 字符串喂给 sandbox.exec。
+ */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * 代码搜索。
  * 优先用 ripgrep（中大型仓库上快得多），失败回落到纯 Node 实现（无外部依赖）。
- * workspaceRoot 固定作为 cwd / 遍历根，保证搜索范围始终限制在当前项目内。
+ * sandbox.workingDirectory 固定作为 cwd / 遍历根，保证搜索范围始终限制在当前项目内。
+ *
+ * P5: 改走 sandbox.exec。command 字符串里的 query / glob 全部经 `shellQuote`，
+ * 防止 model 把 shell metachar 注进搜索词。
  */
+const RIPGREP_TIMEOUT_MS = 30_000;
+
 export async function searchWorkspace(
-  workspaceRoot: string,
+  sandbox: Sandbox,
   query: string,
   maxResults = 20,
   glob?: string,
 ): Promise<WorkspaceSearchResult[]> {
-  const args = [
+  const workspaceRoot = sandbox.workingDirectory;
+  const argParts = [
+    shellQuote(rgPath),
     "--line-number",
     "--column",
     "--smart-case",
     "--hidden",
     "--glob",
-    "!.git",
+    shellQuote("!.git"),
     "--glob",
-    "!node_modules",
+    shellQuote("!node_modules"),
     "--glob",
-    "!.next",
+    shellQuote("!.next"),
     "--glob",
-    "!dist",
+    shellQuote("!dist"),
     "--glob",
-    "!build",
+    shellQuote("!build"),
     "--max-count",
     String(Math.max(1, Math.min(maxResults, 50))),
   ];
 
   if (glob) {
-    args.push("--glob", glob);
+    argParts.push("--glob", shellQuote(glob));
   }
 
-  args.push(query, ".");
+  argParts.push(shellQuote(query), ".");
 
-  try {
-    // rgPath 由 @vscode/ripgrep 在 npm install 时下载到 node_modules 下，
-    // 不依赖系统 PATH。任何拉下仓库的机器 npm install 后都能直接搜。
-    const { stdout } = await execFileAsync(rgPath, args, {
-      cwd: workspaceRoot,
-      maxBuffer: 1024 * 1024 * 4,
-    });
+  const command = argParts.join(" ");
 
-    return stdout
+  const result = await sandbox.exec(command, workspaceRoot, RIPGREP_TIMEOUT_MS);
+
+  // rg 退出码 1 = 没命中，0 = 有命中，>1 = 错误。null = 进程级错误（spawn 失败 / timeout）。
+  if (result.exitCode === 0) {
+    return result.stdout
       .split("\n")
       .filter(Boolean)
       .map((line) => {
         const match = line.match(/^(.*?):(\d+):(\d+):(.*)$/);
-
-        if (!match) {
-          return null;
-        }
-
+        if (!match) return null;
         return {
           path: match[1],
           line: Number(match[2]),
@@ -477,39 +497,19 @@ export async function searchWorkspace(
           preview: match[4].trim(),
         } satisfies WorkspaceSearchResult;
       })
-      .filter((result): result is WorkspaceSearchResult => result !== null);
-  } catch (error) {
-    // rg 退出码 1 表示没命中，直接返回空。
-    const numericCode =
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      typeof error.code === "number"
-        ? error.code
-        : null;
-    if (numericCode === 1) {
-      return [];
-    }
-
-    // 按理说走不到这里 —— @vscode/ripgrep 在 npm install 时把二进制放到了 node_modules/。
-    // 但万一 postinstall 下载被防火墙挡了 / 平台不支持 / 权限出问题，这个兜底能让
-    // 搜索仍然工作，而不是整个对话链路报 500。
-    const stringCode =
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      typeof error.code === "string"
-        ? error.code
-        : null;
-    if (stringCode === "ENOENT") {
-      console.warn(
-        "[searchWorkspace] @vscode/ripgrep binary not found at",
-        rgPath,
-        "— falling back to Node-based search. 检查 npm install 日志里有没有 postinstall 错误。",
-      );
-      return searchWorkspaceWithNode(workspaceRoot, query, maxResults, glob);
-    }
-
-    throw error;
+      .filter((entry): entry is WorkspaceSearchResult => entry !== null);
   }
+
+  if (result.exitCode === 1) {
+    // rg "no matches" — 正常空结果。
+    return [];
+  }
+
+  // 进程级错误：spawn 失败（rgPath 不存在 / postinstall 被防火墙挡）/ timeout / 其它。
+  // @vscode/ripgrep 在 npm install 时把二进制放进 node_modules/，按理走不到这里。
+  // 万一发生：兜底用 Node 实现，让搜索功能不至于整体挂掉。
+  console.warn(
+    `[searchWorkspace] ripgrep failed (exitCode=${result.exitCode}) — falling back to Node-based search. stderr: ${result.stderr.slice(0, 200)}`,
+  );
+  return searchWorkspaceWithNode(sandbox, query, maxResults, glob);
 }

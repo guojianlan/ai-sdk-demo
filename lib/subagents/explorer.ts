@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { instrumentModel } from "@/lib/devtools";
 import { gateway, gatewayModelId } from "@/lib/gateway";
+import { connectSandbox } from "@/lib/sandbox";
 import { toolErr, toolOk } from "@/lib/tool-result";
 import {
   getWorkspaceToolContext,
@@ -57,10 +58,17 @@ const explorerAgent = new ToolLoopAgent({
   stopWhen: stepCountIs(100),
   callOptionsSchema: explorerCallOptionsSchema,
   prepareCall: async ({ options, ...settings }) => {
+    // Subagent 跑在它自己的 ToolLoopAgent 里，必须有自己的 sandbox 实例（class
+    // 不能跨 callOptions 序列化）。这里基于 workspaceRoot 现场 connect 一个 local
+    // sandbox——LocalSandbox 是纯 wrapper，开销可忽略。
+    const sandbox = await connectSandbox({
+      type: "local",
+      workingDirectory: options.workspaceRoot,
+    });
     return {
       ...settings,
       experimental_context: {
-        workspaceRoot: options.workspaceRoot,
+        sandbox,
         workspaceName: options.workspaceName ?? "",
       } satisfies WorkspaceToolContext,
     };
@@ -116,7 +124,7 @@ export const exploreWorkspaceTool = tool({
   ].join("\n"),
   inputSchema: exploreInputSchema,
   execute: async ({ hint, question }, { experimental_context, abortSignal }) => {
-    const { workspaceName, workspaceRoot } = getWorkspaceToolContext(
+    const { sandbox, workspaceName } = getWorkspaceToolContext(
       experimental_context,
     );
 
@@ -127,7 +135,9 @@ export const exploreWorkspaceTool = tool({
     try {
       const result = await explorerAgent.generate({
         prompt,
-        options: { workspaceRoot, workspaceName },
+        // workspaceRoot 通过 sandbox.workingDirectory 取——subagent 内部会再
+        // connect 一个自己的 LocalSandbox 实例（避免跨 agent 共享 class 实例）。
+        options: { workspaceRoot: sandbox.workingDirectory, workspaceName },
         abortSignal,
       });
 

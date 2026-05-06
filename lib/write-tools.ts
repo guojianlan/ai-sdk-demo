@@ -1,8 +1,8 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { z } from "zod";
 
+import type { Sandbox } from "@/lib/sandbox/interface";
 import { approvedTool } from "@/lib/tool-helpers";
 import { toolErr, toolOk } from "@/lib/tool-result";
 import { resolveWorkspacePath } from "@/lib/workspaces";
@@ -20,6 +20,8 @@ import {
  * 实现细节：两个工具都走 `approvedTool`（见 lib/tool-helpers.ts），
  * `needsApproval` 的语义是"除非会话开了 bypassPermissions，否则一律要弹卡"。
  * execute 只在用户点同意之后才会跑，里面不用重复做审批判断。
+ *
+ * P5: IO 全走 sandbox（sandbox.readFile / writeFile / mkdir）；approval 链路一行未动。
  */
 
 const writeFileInputSchema = z.object({
@@ -78,9 +80,9 @@ function countLines(text: string) {
   return text.split("\n").length;
 }
 
-async function readFileIfExists(absolutePath: string) {
+async function readFileIfExists(sandbox: Sandbox, absolutePath: string) {
   try {
-    return await fs.readFile(absolutePath, "utf8");
+    return await sandbox.readFile(absolutePath, "utf-8");
   } catch (error) {
     if (
       error &&
@@ -117,13 +119,14 @@ export const writeFileTool = approvedTool({
   inputSchema: writeFileInputSchema,
   needsApproval: (_input, ctx) => !getBypassPermissions(ctx),
   execute: async ({ content, relativePath }, { experimental_context }) => {
-    const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
+    const { sandbox } = getWorkspaceToolContext(experimental_context);
+    const workspaceRoot = sandbox.workingDirectory;
     try {
       const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
-      const previous = await readFileIfExists(absolutePath);
+      const previous = await readFileIfExists(sandbox, absolutePath);
 
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-      await fs.writeFile(absolutePath, content, "utf8");
+      await sandbox.mkdir(path.dirname(absolutePath), { recursive: true });
+      await sandbox.writeFile(absolutePath, content, "utf-8");
 
       return toolOk({
         path: path.relative(workspaceRoot, absolutePath) || relativePath,
@@ -166,7 +169,8 @@ export const editFileTool = approvedTool({
     { newString, oldString, relativePath, replaceAll = false },
     { experimental_context },
   ) => {
-    const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
+    const { sandbox } = getWorkspaceToolContext(experimental_context);
+    const workspaceRoot = sandbox.workingDirectory;
     try {
       const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
 
@@ -174,7 +178,7 @@ export const editFileTool = approvedTool({
         return toolErr("oldString and newString are identical; nothing to do.");
       }
 
-      const previous = await readFileIfExists(absolutePath);
+      const previous = await readFileIfExists(sandbox, absolutePath);
 
       if (previous === null) {
         return toolErr(
@@ -200,7 +204,7 @@ export const editFileTool = approvedTool({
         ? previous.split(oldString).join(newString)
         : previous.replace(oldString, newString);
 
-      await fs.writeFile(absolutePath, nextContent, "utf8");
+      await sandbox.writeFile(absolutePath, nextContent, "utf-8");
 
       const matchIndex = previous.indexOf(oldString);
       const startLine = previous.slice(0, matchIndex).split("\n").length;

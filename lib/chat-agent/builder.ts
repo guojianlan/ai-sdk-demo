@@ -5,6 +5,7 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { z } from "zod";
 
 import { buildSystemPrompt } from "@/lib/chat-agent/system-prompt";
+import { connectSandbox } from "@/lib/sandbox";
 import type { SkillMetadata } from "@/lib/skills";
 import { normalizeWorkspaceRoot } from "@/lib/workspaces";
 
@@ -119,11 +120,20 @@ export function createChatAgent<
         workspaceName,
       });
 
+      // P5: 每个 prepareCall 现场 connect 一个 LocalSandbox。LocalSandbox 是
+      // 纯 fs wrapper，开销可忽略；不复用是为了避免跨请求/跨 step 持有 class
+      // 实例（更适合将来的 cloud sandbox：那些实例可能持有远端 session）。
+      const sandbox = await connectSandbox({
+        type: "local",
+        workingDirectory: workspaceRoot,
+      });
+
       return {
         ...settings,
         instructions,
         experimental_context: {
           ...baseContext,
+          sandbox,
           // skill 工具按 ctx.skills 找当前可调 skill，按 name 读 body 返回
           skills: config.skills ?? [],
         },

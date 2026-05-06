@@ -1,6 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+import { getSandbox } from "@/lib/sandbox";
+import type { Sandbox } from "@/lib/sandbox/interface";
 import { toolErr, toolOk } from "@/lib/tool-result";
 import {
   listWorkspaceEntries,
@@ -9,11 +11,13 @@ import {
 } from "@/lib/workspaces";
 
 /**
- * 这些字段是工作区相关工具运行时所依赖的最小上下文。
- * 只要 context 中包含这两个字段，就可以复用同一套工具实现。
+ * 工作区工具运行时依赖的最小上下文。
+ *
+ * P5: workspaceRoot 已不再单独传——sandbox.workingDirectory 就是它。保留
+ * workspaceName 是因为它纯展示用（toolOk 返回里 UI 要显示），跟 fs 无关。
  */
 export type WorkspaceToolContext = {
-  workspaceRoot: string;
+  sandbox: Sandbox;
   workspaceName: string;
 };
 
@@ -23,13 +27,15 @@ export function getWorkspaceToolContext(
   if (
     typeof context !== "object" ||
     context === null ||
-    !("workspaceRoot" in context) ||
     !("workspaceName" in context)
   ) {
     throw new Error("Workspace tool context is missing for this request.");
   }
 
-  return context as WorkspaceToolContext;
+  const sandbox = getSandbox(context);
+  const { workspaceName } = context as { workspaceName: string };
+
+  return { sandbox, workspaceName };
 }
 
 /**
@@ -84,15 +90,19 @@ export const workspaceToolset = {
         .describe("Maximum number of entries to return."),
     }),
     execute: async ({ depth, limit, relativePath }, { experimental_context }) => {
-      const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
+      const { sandbox } = getWorkspaceToolContext(experimental_context);
       try {
         const entries = await listWorkspaceEntries(
-          workspaceRoot,
+          sandbox,
           relativePath,
           depth,
           limit,
         );
-        return toolOk({ workspaceRoot, relativePath, entries });
+        return toolOk({
+          workspaceRoot: sandbox.workingDirectory,
+          relativePath,
+          entries,
+        });
       } catch (error) {
         return toolErr(error);
       }
@@ -116,15 +126,14 @@ export const workspaceToolset = {
         .describe("Maximum number of matches to return."),
     }),
     execute: async ({ glob, maxResults, query }, { experimental_context }) => {
-      const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
+      const { sandbox } = getWorkspaceToolContext(experimental_context);
       try {
-        const matches = await searchWorkspace(
-          workspaceRoot,
+        const matches = await searchWorkspace(sandbox, query, maxResults, glob);
+        return toolOk({
+          workspaceRoot: sandbox.workingDirectory,
           query,
-          maxResults,
-          glob,
-        );
-        return toolOk({ workspaceRoot, query, matches });
+          matches,
+        });
       } catch (error) {
         return toolErr(error);
       }
@@ -147,13 +156,9 @@ export const workspaceToolset = {
         .describe("Maximum number of characters to return."),
     }),
     execute: async ({ maxChars, relativePath }, { experimental_context }) => {
-      const { workspaceRoot } = getWorkspaceToolContext(experimental_context);
+      const { sandbox } = getWorkspaceToolContext(experimental_context);
       try {
-        const file = await readWorkspaceFile(
-          workspaceRoot,
-          relativePath,
-          maxChars,
-        );
+        const file = await readWorkspaceFile(sandbox, relativePath, maxChars);
         return toolOk(file);
       } catch (error) {
         return toolErr(error);
