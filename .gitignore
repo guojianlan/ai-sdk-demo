@@ -46,3 +46,8 @@ tmp
 
 # local SQLite store for persisted chat messages (P3-b)
 /.data/
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/

@@ -8,7 +8,8 @@
     "dev:all": "next dev & devtools",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.36",
@@ -28,6 +29,7 @@
   },
   "devDependencies": {
     "@ai-sdk/devtools": "^0.0.15",
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
