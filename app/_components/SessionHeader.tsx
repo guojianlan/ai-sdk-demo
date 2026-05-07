@@ -57,10 +57,10 @@ export function SessionHeader({
         >
           {WORKSPACE_ACCESS_MODE_LABELS[activeAccessMode]}
         </span>
-        {activeSession?.bypassPermissions && (
+        {activeSession?.shellApprovalPolicy === "never" && (
           <span
             className="inline-flex items-center gap-1 rounded-sm border border-amber-500 bg-amber-50 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-700"
-            title="已开启 bypass permissions：所有写入会自动执行，不再弹确认卡"
+            title="Shell 审批策略：never —— 任何 shell 命令直接跑，不弹审批"
           >
             <svg
               viewBox="0 0 24 24"
@@ -74,7 +74,15 @@ export function SessionHeader({
             >
               <path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
             </svg>
-            bypass
+            shell:never
+          </span>
+        )}
+        {activeSession?.shellApprovalPolicy === "always" && (
+          <span
+            className="inline-flex items-center gap-1 rounded-sm border border-slate-400 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-700"
+            title="Shell 审批策略：always —— 任何 shell 命令都弹审批"
+          >
+            shell:always
           </span>
         )}
       </div>

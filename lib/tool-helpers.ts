@@ -33,7 +33,7 @@ type ApprovedToolConfig<Schema extends FlexibleSchema> = {
   ) => boolean | Promise<boolean>;
   execute: (
     input: InferSchema<Schema>,
-    options: { experimental_context?: unknown },
+    options: { experimental_context?: unknown; abortSignal?: AbortSignal },
   ) => unknown | Promise<unknown>;
 };
 

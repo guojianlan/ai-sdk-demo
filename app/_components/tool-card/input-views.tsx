@@ -1,8 +1,8 @@
 /**
  * 工具调用发起时（approval-requested / input-available 等状态）显示给用户看的"输入预览"。
- * 专门给两个写入工具（write_file / edit_file）做了定制视图：
- * - write_file：整文件预览 + 行数 + 字节数
- * - edit_file：红绿双栏 diff
+ * 专门给两个写入工具（write / edit）做了定制视图：
+ * - write：整文件预览 + 行数 + 字节数
+ * - edit：红绿双栏 diff
  * 其它工具走通用 JSON 兜底。
  */
 
@@ -30,7 +30,7 @@ function WriteFileCard({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center rounded-sm border border-slate-300 bg-white px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-700">
-          write_file
+          write
         </span>
         <span className="font-mono text-[12px] text-slate-700">
           {input.relativePath ?? "(missing path)"}
@@ -84,7 +84,7 @@ function EditFileCard({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center rounded-sm border border-slate-300 bg-white px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-700">
-          edit_file
+          edit
         </span>
         <span className="font-mono text-[12px] text-slate-700">
           {input.relativePath ?? "(missing path)"}
@@ -159,6 +159,45 @@ function GenericToolCard({
   );
 }
 
+function ShellCard({
+  input,
+  state,
+}: {
+  input: { command?: string; cwd?: string; reason?: string };
+  state: "pending" | "approved";
+}) {
+  const command = input.command ?? "";
+  const cwd = input.cwd ?? ".";
+  const borderClass =
+    state === "pending" ? "border-sky-300" : "border-slate-200";
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center rounded-sm border border-slate-300 bg-white px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-700">
+          shell
+        </span>
+        <span className="font-mono text-[12px] text-slate-700">
+          cwd · {cwd}
+        </span>
+      </div>
+      {input.reason && (
+        <div className="border-l-2 border-slate-200 pl-3 text-[13px] leading-6 text-slate-600">
+          {input.reason}
+        </div>
+      )}
+      <pre
+        className={[
+          "overflow-x-auto rounded-sm border bg-slate-900 p-3 font-mono text-[12px] leading-6 text-slate-100",
+          borderClass,
+        ].join(" ")}
+      >
+        $ {command || "(empty)"}
+      </pre>
+    </div>
+  );
+}
+
 /**
  * 工具输入预览的分发器：按工具名挑一个最合适的视图渲染。
  */
@@ -167,7 +206,7 @@ export function renderToolInput(
   input: unknown,
   state: "pending" | "approved",
 ) {
-  if (toolName === "write_file") {
+  if (toolName === "write") {
     return (
       <WriteFileCard
         input={(input ?? {}) as Parameters<typeof WriteFileCard>[0]["input"]}
@@ -176,10 +215,19 @@ export function renderToolInput(
     );
   }
 
-  if (toolName === "edit_file") {
+  if (toolName === "edit") {
     return (
       <EditFileCard
         input={(input ?? {}) as Parameters<typeof EditFileCard>[0]["input"]}
+        state={state}
+      />
+    );
+  }
+
+  if (toolName === "shell") {
+    return (
+      <ShellCard
+        input={(input ?? {}) as Parameters<typeof ShellCard>[0]["input"]}
         state={state}
       />
     );

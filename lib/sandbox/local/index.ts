@@ -18,7 +18,7 @@ import type {
  *   抽象层上消失**。
  * - `exec` 使用 `shell: true`，方便构造带 quote / 管道的命令（例如 ripgrep + glob）。
  *   **代价是命令字符串必须由调用方保证可信**：不要让 model 直接控制 command 字符串，
- *   只给受控工具（如 search_code）构造命令时使用，并在那一层做 shell-escape。
+ *   只给受控工具（如 grep）构造命令时使用，并在那一层做 shell-escape。
  *
  * cloud-only 字段（snapshot / extendTimeout / domain / execDetached）不实现。
  */

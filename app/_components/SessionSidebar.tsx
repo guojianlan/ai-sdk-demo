@@ -153,9 +153,14 @@ export function SessionSidebar({
                 >
                   {WORKSPACE_ACCESS_MODE_LABELS[session.workspaceAccessMode]}
                 </span>
-                {session.bypassPermissions && (
+                {session.shellApprovalPolicy === "never" && (
                   <span className="inline-flex items-center rounded-sm border border-amber-500 bg-amber-50 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-700">
-                    bypass
+                    shell:never
+                  </span>
+                )}
+                {session.shellApprovalPolicy === "always" && (
+                  <span className="inline-flex items-center rounded-sm border border-slate-400 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                    shell:always
                   </span>
                 )}
               </div>

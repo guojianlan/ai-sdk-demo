@@ -11,20 +11,22 @@ import {
 import { getWorkflowMetadata, getWritable } from "workflow";
 import { getRun } from "workflow/api";
 
-import {
-  createProjectEngineerAgent,
-  projectEngineerStaticToolset,
-} from "@/app/api/chat/agent-config";
-import {
-  compareAndSetActiveStreamId,
-  saveMessages,
-} from "@/lib/chat-store";
 import type { WorkspaceAccessMode } from "@/lib/chat-access-mode";
-import { env } from "@/lib/env";
-import { interactiveToolset } from "@/lib/interactive-tools";
-import { createWeatherMCPClient } from "@/lib/mcp/weather-client";
 import type { SkillMetadata } from "@/lib/skills";
-import { shouldPauseForToolInteraction } from "@/lib/workflow-pause";
+import type { ShellApprovalPolicy } from "@/lib/tools/shell-approval";
+import {
+  hasCompletedToolCalls,
+  shouldPauseForToolInteraction,
+} from "@/lib/workflow-pause";
+
+/**
+ * 这个文件运行在 workflow runtime 里，workflow plugin 会扫描静态 import 链；
+ * 链上任何 Node-only 模块（fs/path/os/better-sqlite3 等）都会被拒绝。
+ *
+ * 所以：用到 env / chat-store / mcp / agent-config 的地方都改成 step 内部
+ * `await import()`（参考 open-agents apps/web/app/workflows/chat.ts 的做法）。
+ * 顶层只允许保留 ai / workflow 包、纯 type、和无 Node 依赖的本地模块。
+ */
 
 export type ChatWorkflowOptions = {
   chatId: string;
@@ -34,7 +36,7 @@ export type ChatWorkflowOptions = {
   workspaceRoot: string;
   workspaceName?: string;
   workspaceAccessMode: WorkspaceAccessMode;
-  bypassPermissions: boolean;
+  shellApprovalPolicy: ShellApprovalPolicy | undefined;
   conversationSummary: string | null;
   /** 当前会话可用 skill 列表（POST handler 调 getSkills() 取得后传入）。 */
   skills: SkillMetadata[];
@@ -98,7 +100,7 @@ async function runAgentLoop(
   let exhaustedSteps = false;
   let finalFinishReason: FinishReason | undefined;
 
-  const limit = env.outerStepLimit;
+  const limit = await getOuterStepLimit();
 
   for (let step = 0; step < limit; step++) {
     // toUIMessageStream 的 originalMessages 用于 message id 基准：
@@ -130,18 +132,27 @@ async function runAgentLoop(
         allMessages.push(options.compactionNotice);
       }
       allMessages.push(pendingResponseMessage);
-      saveMessages(options.chatId, allMessages);
+      await persistAssistantSnapshot(options.chatId, allMessages);
     }
 
     finalFinishReason = result.finishReason;
 
-    const isToolCallContinuation = result.finishReason === "tool-calls";
-    const needsPause = shouldPauseForToolInteraction(
-      result.responseMessage?.parts ?? [],
-    );
+    // outer loop 是否继续？两条路：
+    // 1. AI SDK 报 finishReason="tool-calls"（模型还没说完，需要 tool 结果继续）
+    // 2. 或者 message 里已经有跑完的 tool call (output-available 等)，但模型本步
+    //    finish=stop——这是 AI SDK 在 stopWhen=stepCountIs(1) 下的常见情况：
+    //    模型本步只发了一个 tool call、AI SDK 执行了它就到了 step 上限，模型没看
+    //    到结果就停了。这种情况外层必须再跑一步，让模型看到 tool 结果。
+    //    如果不这么处理，client 端 lastAssistantMessageIsCompleteWithToolCalls
+    //    会自动 resubmit，导致每个 tool call 起一次新 workflow / 新 assistantId
+    //    / UI 多冒一个 ENGINEER 气泡。
+    const responseParts = result.responseMessage?.parts ?? [];
+    const isToolCallContinuation =
+      result.finishReason === "tool-calls" || hasCompletedToolCalls(responseParts);
+    const needsPause = shouldPauseForToolInteraction(responseParts);
 
     console.log(
-      `[workflow/chat] chat=${options.chatId} step=${step + 1}/${limit} finishReason=${result.finishReason ?? "?"} pause=${needsPause} aborted=${result.aborted}`,
+      `[workflow/chat] chat=${options.chatId} step=${step + 1}/${limit} finishReason=${result.finishReason ?? "?"} pause=${needsPause} aborted=${result.aborted} continue=${isToolCallContinuation}`,
     );
 
     if (result.aborted) break;
@@ -181,6 +192,7 @@ async function runAgentStep(
   let closeMcp: (() => Promise<void>) | null = null;
   if (hasWorkspaceTools) {
     try {
+      const { createWeatherMCPClient } = await import("@/lib/mcp/weather-client");
       const mcp = await createWeatherMCPClient();
       mcpTools = await mcp.tools();
       closeMcp = () => mcp.close();
@@ -191,6 +203,13 @@ async function runAgentStep(
       );
     }
   }
+
+  const { createProjectEngineerAgent, projectEngineerStaticToolset } =
+    await import("@/app/api/chat/agent-config");
+  // interactiveToolset 也通过 dynamic import 进 step——`lib/tools` barrel 透传到
+  // 含 node:fs 的 skill tool，静态 import 会被 workflow plugin 拒（"node-js module
+  // in workflow"）。
+  const { interactiveToolset } = await import("@/lib/tools");
 
   const agent = createProjectEngineerAgent({
     tools: hasWorkspaceTools
@@ -211,7 +230,7 @@ async function runAgentStep(
         workspaceRoot: options.workspaceRoot,
         workspaceName: options.workspaceName,
         workspaceAccessMode: options.workspaceAccessMode,
-        bypassPermissions: options.bypassPermissions,
+        shellApprovalPolicy: options.shellApprovalPolicy ?? "untrusted",
       },
       abortSignal: abortController.signal,
       experimental_transform: smoothStream({
@@ -301,8 +320,23 @@ async function sendFinishChunk(finishReason: FinishReason): Promise<void> {
 
 async function clearActiveStream(chatId: string, workflowRunId: string) {
   "use step";
-
+  const { compareAndSetActiveStreamId } = await import("@/lib/chat-store");
   compareAndSetActiveStreamId(chatId, workflowRunId, null);
+}
+
+async function getOuterStepLimit(): Promise<number> {
+  "use step";
+  const { env } = await import("@/lib/env");
+  return env.outerStepLimit;
+}
+
+async function persistAssistantSnapshot(
+  chatId: string,
+  messages: UIMessage[],
+): Promise<void> {
+  "use step";
+  const { saveMessages } = await import("@/lib/chat-store");
+  saveMessages(chatId, messages);
 }
 
 async function closeWorkflowStream() {

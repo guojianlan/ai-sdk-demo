@@ -2,8 +2,8 @@
  * 统一的 tool execute 返回 shape。
  *
  * 目前仓库里 tool 的返回形态有三种：
- * - 直接 throw（workspaceToolset 的 list_files / search_code / read_file）
- * - `{ok, ...data}` 平铺（write_file / edit_file / explore_workspace）
+ * - 直接 throw（workspaceToolset 的 glob / grep / read）
+ * - `{ok, ...data}` 平铺（write / edit / task）
  * - 固定 shape 无 ok 标志（shell 总返回 `{output, workingDirectory}`）
  *
  * P3-R 把所有自家 tool 收敛到这一个 discriminated union。好处：

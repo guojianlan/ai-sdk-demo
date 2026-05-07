@@ -69,7 +69,7 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
 
   const o = unwrapped.kind === "ok" ? unwrapped.data : unwrapped.raw;
 
-  if (toolName === "read_file") {
+  if (toolName === "read") {
     const p = typeof o.path === "string" ? o.path : "?";
     const chars =
       typeof o.totalChars === "number"
@@ -79,26 +79,26 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
     return `${p}${chars}${truncated}`;
   }
 
-  if (toolName === "list_files") {
-    const rel = typeof o.relativePath === "string" ? o.relativePath : ".";
-    const count = Array.isArray(o.entries) ? ` · ${o.entries.length} entries` : "";
-    return `${rel}${count}`;
+  if (toolName === "glob") {
+    const base = typeof o.baseDir === "string" ? o.baseDir : ".";
+    const count = typeof o.count === "number" ? ` · ${o.count} files` : "";
+    return `${base}${count}`;
   }
 
-  if (toolName === "search_code") {
+  if (toolName === "grep") {
     const q = typeof o.query === "string" ? `"${o.query}"` : "?";
     const matches = Array.isArray(o.matches) ? ` · ${o.matches.length} matches` : "";
     return `${q}${matches}`;
   }
 
-  if (toolName === "write_file") {
+  if (toolName === "write") {
     const p = typeof o.path === "string" ? o.path : "?";
     const op = typeof o.operation === "string" ? o.operation : "wrote";
     const lines = typeof o.lines === "number" ? ` · ${o.lines}L` : "";
     return `${p} · ${op}${lines}`;
   }
 
-  if (toolName === "edit_file") {
+  if (toolName === "edit") {
     const p = typeof o.path === "string" ? o.path : "?";
     const added = typeof o.addedLines === "number" ? o.addedLines : 0;
     const removed = typeof o.removedLines === "number" ? o.removedLines : 0;
@@ -106,12 +106,20 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
     return `${p} · +${added} −${removed}${reps}`;
   }
 
-  if (toolName === "explore_workspace") {
+  if (toolName === "task") {
     const steps = typeof o.stepsUsed === "number" ? `${o.stepsUsed} steps` : "";
     const files = Array.isArray(o.filesExamined)
       ? `${o.filesExamined.length} files`
       : "";
     return [steps, files].filter(Boolean).join(" · ");
+  }
+
+  if (toolName === "shell") {
+    const exit = typeof o.exitCode === "number" ? `exit ${o.exitCode}` : "";
+    const stdoutLen =
+      typeof o.stdout === "string" ? `${o.stdout.length} chars stdout` : "";
+    const truncated = o.truncated === true ? " · truncated" : "";
+    return [exit, stdoutLen].filter(Boolean).join(" · ") + truncated;
   }
 
   return "";
@@ -154,53 +162,43 @@ function ReadFileOutputView({
   );
 }
 
-function ListFilesOutputView({
+function GlobOutputView({
   output,
 }: {
   output: {
-    relativePath?: string;
-    entries?: Array<{ path?: string; type?: string; size?: number | null }>;
+    pattern?: string;
+    baseDir?: string;
+    count?: number;
+    files?: Array<{ path?: string; size?: number; modifiedAt?: string }>;
   };
 }) {
-  const entries = Array.isArray(output.entries) ? output.entries : [];
+  const files = Array.isArray(output.files) ? output.files : [];
 
   return (
     <div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-600">
         <span className="font-medium text-slate-800">
-          {output.relativePath || "."}
+          {output.pattern || "(no pattern)"}
         </span>
-        <span>· {entries.length} entries</span>
+        <span>· base {output.baseDir || "."}</span>
+        <span>· {files.length} files</span>
       </div>
       <ul className="max-h-80 divide-y divide-slate-100 overflow-auto bg-white font-mono text-[12px]">
-        {entries.map((entry, idx) => {
-          const isDir = entry.type === "directory";
-          return (
-            <li
-              key={`${entry.path ?? idx}-${idx}`}
-              className="flex items-center gap-3 px-3 py-1.5"
-            >
-              <span
-                className={[
-                  "inline-flex w-9 shrink-0 justify-center rounded-sm border px-1 text-[10px] uppercase tracking-[0.14em]",
-                  isDir
-                    ? "border-sky-400 bg-sky-50 text-sky-700"
-                    : "border-slate-300 bg-white text-slate-600",
-                ].join(" ")}
-              >
-                {isDir ? "dir" : "file"}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-slate-800">
-                {entry.path ?? "?"}
-              </span>
-              <span className="shrink-0 text-slate-500">
-                {isDir ? "" : formatBytes(entry.size ?? undefined)}
-              </span>
-            </li>
-          );
-        })}
-        {entries.length === 0 && (
-          <li className="px-3 py-2 text-slate-500">(no entries)</li>
+        {files.map((file, idx) => (
+          <li
+            key={`${file.path ?? idx}-${idx}`}
+            className="flex items-center gap-3 px-3 py-1.5"
+          >
+            <span className="min-w-0 flex-1 truncate text-slate-800">
+              {file.path ?? "?"}
+            </span>
+            <span className="shrink-0 text-slate-500">
+              {formatBytes(file.size)}
+            </span>
+          </li>
+        ))}
+        {files.length === 0 && (
+          <li className="px-3 py-2 text-slate-500">(no matches)</li>
         )}
       </ul>
     </div>
@@ -385,26 +383,89 @@ function ExploreWorkspaceOutputView({
   );
 }
 
+function ShellOutputView({
+  output,
+}: {
+  output: {
+    command?: string;
+    cwd?: string;
+    success?: boolean;
+    exitCode?: number | null;
+    stdout?: string;
+    stderr?: string;
+    truncated?: boolean;
+  };
+}) {
+  const command = output.command ?? "";
+  const cwd = output.cwd ?? ".";
+  const stdout = output.stdout ?? "";
+  const stderr = output.stderr ?? "";
+  const exit = output.exitCode;
+  const success = output.success !== false;
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-600">
+        <span
+          className={[
+            "inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em]",
+            success
+              ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+              : "border-rose-400 bg-rose-50 text-rose-700",
+          ].join(" ")}
+        >
+          exit {exit ?? "?"}
+        </span>
+        <span className="font-medium text-slate-800">cwd · {cwd}</span>
+        {output.truncated && (
+          <span className="text-amber-700">truncated</span>
+        )}
+      </div>
+      <pre className="overflow-x-auto bg-slate-900 px-3 py-2 font-mono text-[12px] leading-6 text-slate-100">
+        $ {command}
+      </pre>
+      {stdout && (
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-slate-200 bg-white px-3 py-2 font-mono text-[12px] leading-6 text-slate-800">
+          {stdout}
+        </pre>
+      )}
+      {stderr && (
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-rose-200 bg-rose-50/40 px-3 py-2 font-mono text-[12px] leading-6 text-rose-800">
+          {stderr}
+        </pre>
+      )}
+      {!stdout && !stderr && (
+        <div className="border-t border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-500">
+          (no output)
+        </div>
+      )}
+    </div>
+  );
+}
+
 function renderKnownOutput(
   toolName: string,
   data: Record<string, unknown>,
 ): React.ReactNode | null {
-  if (toolName === "read_file") {
+  if (toolName === "read") {
     return <ReadFileOutputView output={data} />;
   }
-  if (toolName === "list_files") {
-    return <ListFilesOutputView output={data} />;
+  if (toolName === "glob") {
+    return <GlobOutputView output={data} />;
   }
-  if (toolName === "search_code") {
+  if (toolName === "grep") {
     return <SearchCodeOutputView output={data} />;
   }
-  if (toolName === "write_file") {
+  if (toolName === "shell") {
+    return <ShellOutputView output={data} />;
+  }
+  if (toolName === "write") {
     return <WriteResultView output={data} />;
   }
-  if (toolName === "edit_file") {
+  if (toolName === "edit") {
     return <EditResultView output={data} />;
   }
-  if (toolName === "explore_workspace") {
+  if (toolName === "task") {
     return <ExploreWorkspaceOutputView output={data} />;
   }
   return null;

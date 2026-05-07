@@ -166,12 +166,16 @@ export default function Home() {
     );
   }, [activeChatId, sessions, storageReady]);
 
-  // 没有激活的 session → 自动落第一个。
+  // 没有激活的 session → 自动落第一个。必须等 storage 水合完再跑：
+  // 否则会和 localStorage 加载 effect 竞态——本 effect 拿到 sessions 的初值（一个
+  // 全新随机 id 的 session），把 activeChatId 设成那个新 id，最后把刚水合好的旧
+  // 会话覆盖掉。reload 时表现为 ?session=<新 id>、原对话消失。
   useEffect(() => {
+    if (!storageReady) return;
     if (!activeChatId && sessions[0]) {
       setActiveChatId(sessions[0].id);
     }
-  }, [activeChatId, sessions]);
+  }, [activeChatId, sessions, storageReady]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeChatId) ?? sessions[0],
@@ -242,7 +246,8 @@ export default function Home() {
           workspaceName: activeSession?.workspaceName ?? "",
           workspaceAccessMode:
             activeSession?.workspaceAccessMode ?? DEFAULT_WORKSPACE_ACCESS_MODE,
-          bypassPermissions: activeSession?.bypassPermissions === true,
+          shellApprovalPolicy:
+            activeSession?.shellApprovalPolicy ?? "untrusted",
         }),
         // 关键：reconnectToStream 默认拼 `${api}/${options.chatId}/stream`，
         // 而 options.chatId 来自 useChat 的 `id`——我们的 chatInstanceId 里塞了
@@ -259,7 +264,7 @@ export default function Home() {
       activeSession?.workspaceRoot,
       activeSession?.workspaceName,
       activeSession?.workspaceAccessMode,
-      activeSession?.bypassPermissions,
+      activeSession?.shellApprovalPolicy,
     ],
   );
 
@@ -326,6 +331,19 @@ export default function Home() {
   useEffect(() => {
     setUserScrolledAway(false);
   }, [activeSessionId]);
+
+  // 把 useChat 的 messages 同步回 hydratedMessages：activeSessionId 这条记录始终
+  // 是「该会话最新的一帧」。否则切走再切回 useChat 会用首次水合时的旧 snapshot
+  // 重建 initialMessages，丢掉这一轮的对话内容。
+  // useChat 自带 experimental_throttle:50 已经把更新频率压住了，这里直接跟着跑。
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (messages.length === 0) return;
+    setHydratedMessages((prev) => {
+      if (prev[activeSessionId] === messages) return prev;
+      return { ...prev, [activeSessionId]: messages };
+    });
+  }, [activeSessionId, messages]);
 
   // P3-b: useChat 的 messages 不再写回 session（服务端 SQLite 已经持久化）。
   // 只把派生的 title / preview / updatedAt 写回 localStorage，供侧栏展示。
@@ -395,7 +413,7 @@ export default function Home() {
   async function handlePickerSubmit({
     workspace,
     workspaceAccessMode,
-    bypassPermissions,
+    shellApprovalPolicy,
   }: WorkspacePickerSubmit) {
     if (status === "streaming" || status === "submitted") {
       await handleStop();
@@ -403,7 +421,7 @@ export default function Home() {
     const nextSession = createSession(
       workspace,
       workspaceAccessMode,
-      bypassPermissions,
+      shellApprovalPolicy,
     );
     // 新会话肯定没 DB 历史，直接预填空数组，免得 hydrate effect 再发一次多余请求。
     setHydratedMessages((prev) => ({ ...prev, [nextSession.id]: [] }));
@@ -482,7 +500,7 @@ export default function Home() {
                         void addToolApprovalResponse({ id, approved, reason })
                       }
                       onToolOutput={({ tool, toolCallId, output }) =>
-                        // P3-c: 交互工具（ask_question 等）没有 server-side execute，
+                        // P3-c: 交互工具（ask_user_question 等）没有 server-side execute，
                         // 卡片收集到用户的选择后靠 addToolOutput 把 output 回灌回去；
                         // 之后 useChat 的 sendAutomaticallyWhen 会自动继续下一步。
                         // 这里做一次 string → typed tool name 的松散 cast，避免把

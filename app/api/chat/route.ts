@@ -10,6 +10,7 @@ import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
+import type { ShellApprovalPolicy } from "@/lib/tools";
 import { sanitizeChatUIMessages } from "@/lib/chat/sanitize-messages";
 import {
   compareAndSetActiveStreamId,
@@ -52,7 +53,7 @@ export async function POST(request: Request) {
     workspaceRoot?: string;
     workspaceName?: string;
     workspaceAccessMode?: WorkspaceAccessMode;
-    bypassPermissions?: boolean;
+    shellApprovalPolicy?: ShellApprovalPolicy;
   };
 
   const workspaceRoot = body.workspaceRoot?.trim();
@@ -180,7 +181,7 @@ export async function POST(request: Request) {
       workspaceRoot,
       workspaceName: body.workspaceName,
       workspaceAccessMode,
-      bypassPermissions: body.bypassPermissions === true,
+      shellApprovalPolicy: body.shellApprovalPolicy,
       conversationSummary: agentSummary,
       skills,
     },

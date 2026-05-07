@@ -3,12 +3,18 @@ import fs from "node:fs/promises";
 import { tool } from "ai";
 import { z } from "zod";
 
+import {
+  extractSkillBody,
+  substituteArguments,
+  type SkillMetadata,
+} from "@/lib/skills/types";
 import { toolErr, toolOk } from "@/lib/tool-result";
-
-import { extractSkillBody, substituteArguments, type SkillMetadata } from "./types";
 
 /**
  * `skill` 工具 —— open-agents hybrid 模式的核心。
+ *
+ * 命名对齐 open-agents `tools/skill.ts`（key: `skill`）。skill discovery / cache /
+ * types 仍然在 `lib/skills/`（与 tool 解耦：tool 只负责"按 name 读 body"）。
  *
  * 工作方式：
  * - system prompt 已经把 `name + description` 列给 model 看（buildSkillsSection）；
@@ -17,11 +23,9 @@ import { extractSkillBody, substituteArguments, type SkillMetadata } from "./typ
  *
  * 设计选择：
  * - 走 ToolResult<T>（项目 convention）而不是 open-agents 的 {success, ...}。
- * - 暂时直接 fs.readFile。C 路 sandbox 落地后切到 sandbox.readFile。
+ * - 直接 fs.readFile（skill 在仓库内、不会跨 sandbox 边界）。
  * - 在 body 顶部注入 "Skill directory:" 一行，让 model 引用 skill 目录里的
  *   scripts / references 时知道绝对路径（跟 open-agents `injectSkillDirectory` 同效）。
- *
- * 参考：tmp/open-agents-main/packages/agent/tools/skill.ts
  */
 
 interface SkillToolContext {
@@ -88,7 +92,3 @@ export const skillTool = tool({
     });
   },
 });
-
-export const skillToolset = {
-  skill: skillTool,
-};

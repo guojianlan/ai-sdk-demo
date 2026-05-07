@@ -59,6 +59,25 @@ function planToMarkdown(
  * 把 streaming 的 partial step 合并到 editableSteps。
  * streaming 期间新 step 到来时追加；已有 step 的新字段更新但不覆盖用户的编辑。
  */
+// streamObject 的 partial 在某些 provider（gpt-5.5 + reasoning_effort=high 实测）
+// 下会短暂吐出非字符串/非数组的中间形态（如 `{}`）。React 渲染时若拿到 `{}` 会
+// 报「Objects are not valid as a React child」。这几个 type-guard 把字段强制收
+// 敛到本来类型，碰到非法值就忽略，等下一个 partial 再覆盖。
+function pickString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function pickStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function pickRisk(value: unknown): "low" | "medium" | "high" | undefined {
+  return value === "low" || value === "medium" || value === "high"
+    ? value
+    : undefined;
+}
+
 function mergeStreamingSteps(
   existing: EditableStep[],
   incoming: Array<Partial<{
@@ -71,7 +90,13 @@ function mergeStreamingSteps(
   const result = [...existing];
   for (let i = 0; i < incoming.length; i++) {
     const src = incoming[i];
-    if (!src) continue;
+    if (!src || typeof src !== "object") continue;
+
+    const title = pickString(src.title);
+    const reason = pickString(src.reason);
+    const filesToTouch = pickStringArray(src.filesToTouch);
+    const risk = pickRisk(src.risk);
+
     if (i < result.length) {
       // streaming 阶段模型会先吐半句，再逐步补全同一个字段；
       // 因此这里要用"最新片段覆盖旧片段"，否则标题/原因会永远停在首个半成品。
@@ -81,18 +106,18 @@ function mergeStreamingSteps(
       const cur = result[i];
       result[i] = {
         ...cur,
-        title: src.title ?? cur.title,
-        reason: src.reason ?? cur.reason,
-        filesToTouch: src.filesToTouch ?? cur.filesToTouch,
-        risk: src.risk ?? cur.risk,
+        title: title ?? cur.title,
+        reason: reason ?? cur.reason,
+        filesToTouch: filesToTouch ?? cur.filesToTouch,
+        risk: risk ?? cur.risk,
       };
     } else {
       // 新 step：追加。
       result.push({
-        title: src.title ?? "",
-        reason: src.reason ?? "",
-        filesToTouch: src.filesToTouch ?? [],
-        risk: src.risk ?? "low",
+        title: title ?? "",
+        reason: reason ?? "",
+        filesToTouch: filesToTouch ?? [],
+        risk: risk ?? "low",
         checked: true,
       });
     }

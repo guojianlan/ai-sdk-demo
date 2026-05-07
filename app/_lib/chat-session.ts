@@ -5,6 +5,13 @@ import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
+// 走单文件 import：barrel 会拉到 node:fs（task.ts → explorer.ts → devtools），
+// chat-session 同时被 client 引用，编译会挂。
+import {
+  DEFAULT_SHELL_APPROVAL_POLICY,
+  normalizeShellApprovalPolicy,
+  type ShellApprovalPolicy,
+} from "@/lib/tools/shell-approval";
 
 /**
  * 主页 chat UI 用到的客户端类型、常量和 localStorage 相关的纯函数。
@@ -33,10 +40,15 @@ export type ChatSession = {
   workspaceName: string;
   workspaceAccessMode: WorkspaceAccessMode;
   /**
-   * 会话级"自动批准"开关。开启后写入工具的 needsApproval 会返回 false，
-   * Agent 直接执行不弹确认。默认 false（安全态）。
+   * 会话级 shell 审批策略。
+   *
+   * - `never`     —— 任何 shell 命令直接跑（demo / 无人值守模式，危险）
+   * - `untrusted` —— 已知安全命令（ls / cat / git status 等）直接跑，其它弹审批（默认）
+   * - `always`    —— 任何 shell 命令都弹审批（最保守）
+   *
+   * 写文件 (`write` / `edit`) 不再走审批——open-agents 风格，靠 git diff 事后 review。
    */
-  bypassPermissions: boolean;
+  shellApprovalPolicy: ShellApprovalPolicy;
 };
 
 export const STORAGE_KEY = "ai-sdk-demo.chat-sessions";
@@ -58,7 +70,7 @@ export function getPathLabel(root: string): string {
 export function createSession(
   workspace?: Partial<WorkspaceOption>,
   workspaceAccessMode: WorkspaceAccessMode = DEFAULT_WORKSPACE_ACCESS_MODE,
-  bypassPermissions = false,
+  shellApprovalPolicy: ShellApprovalPolicy = DEFAULT_SHELL_APPROVAL_POLICY,
 ): ChatSession {
   const now = new Date().toISOString();
 
@@ -71,7 +83,7 @@ export function createSession(
     workspaceRoot: workspace?.root ?? "",
     workspaceName: workspace?.name ?? "",
     workspaceAccessMode,
-    bypassPermissions,
+    shellApprovalPolicy,
   };
 }
 
@@ -108,8 +120,12 @@ export function sanitizeSessions(input: unknown): ChatSession[] {
         workspaceAccessMode: normalizeWorkspaceAccessMode(
           session.workspaceAccessMode,
         ),
-        // 旧快照里没有 bypassPermissions，缺省一律按 false 处理（安全态）。
-        bypassPermissions: session.bypassPermissions === true,
+        // 迁移：旧 snapshot 里如果有 `bypassPermissions: true`，等价于之前「写入不弹卡」
+        // —— 现在写入根本不弹卡了，bypass 字段没意义。但 shell 审批是独立维度，
+        // 没法直接映射，全部回落到默认 `untrusted`。新写入的 session 一律带新字段。
+        shellApprovalPolicy: normalizeShellApprovalPolicy(
+          (session as { shellApprovalPolicy?: unknown }).shellApprovalPolicy,
+        ),
       } satisfies ChatSession;
     })
     .filter((session): session is ChatSession => session !== null);

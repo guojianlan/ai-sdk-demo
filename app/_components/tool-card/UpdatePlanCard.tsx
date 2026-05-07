@@ -1,18 +1,21 @@
 "use client";
 
-import type { PlanStep, PlanStepStatus } from "@/lib/plan-tools";
+import type { PlanStep, PlanStepStatus } from "@/lib/tools";
 
 import type { LooseToolPart } from "./types";
 
 /**
- * `update_plan` 的内联渲染。
+ * `todo_write` 的内联渲染。
  *
  * 设计要点：
  * - plan state 活在 `part.input`（AI SDK 会在 tool-call streaming 阶段陆续补全这个字段）；
  *   流式期间（input-streaming）可能拿不全，做了宽容解析：缺字段时退回占位
- * - 五种 status 各有视觉语义（pending 灰 / in_progress 蓝 / done 绿 / blocked 红 / skipped 中灰）
- * - 顶部有一条 progress bar，肉眼一扫就知道 "3/7 done"
+ * - 三种 status 各有视觉语义（pending 灰 / in_progress 蓝 / completed 绿）
+ * - 顶部有一条 progress bar，肉眼一扫就知道 "3/7 completed"
  * - 贴合项目 wireframe 美学：1px 边、mono label、sky-500 accent、方括号标签
+ *
+ * 历史兼容：旧 SQLite 里的 todo_write 快照可能还带 `done` / `blocked` / `skipped`
+ * 字段。`resolveStatusConfig` 把这些映射到三态视觉，避免老消息渲染崩。
  */
 
 type UpdatePlanInputShape = {
@@ -20,15 +23,14 @@ type UpdatePlanInputShape = {
   steps?: PlanStep[];
 };
 
-const STATUS_CONFIG: Record<
-  PlanStepStatus,
-  {
-    label: string;
-    bullet: string;
-    bulletClass: string;
-    textClass: string;
-  }
-> = {
+type StatusVisual = {
+  label: string;
+  bullet: string;
+  bulletClass: string;
+  textClass: string;
+};
+
+const STATUS_CONFIG: Record<PlanStepStatus, StatusVisual> = {
   pending: {
     label: "pending",
     bullet: "○",
@@ -41,34 +43,38 @@ const STATUS_CONFIG: Record<
     bulletClass: "text-sky-600 animate-pulse",
     textClass: "text-slate-900 font-medium",
   },
-  done: {
+  completed: {
     label: "done",
     bullet: "✓",
     bulletClass: "text-emerald-600",
     textClass: "text-slate-500 line-through decoration-slate-300",
   },
-  blocked: {
-    label: "blocked",
-    bullet: "✕",
-    bulletClass: "text-rose-600",
-    textClass: "text-rose-800",
-  },
-  skipped: {
-    label: "skipped",
-    bullet: "—",
-    bulletClass: "text-slate-400",
-    textClass: "text-slate-400 italic",
-  },
 };
+
+/** 把任意（可能含历史值）的 status 字符串映射到当前 3 态。 */
+function resolveStatusConfig(status: string | undefined): StatusVisual {
+  if (!status) return STATUS_CONFIG.pending;
+  if (status in STATUS_CONFIG) {
+    return STATUS_CONFIG[status as PlanStepStatus];
+  }
+  // legacy 兼容：done → completed；blocked / skipped 没有对应视觉，统一回到 pending
+  // 灰色，让旧对话不会因为缺渲染分支炸掉。
+  if (status === "done") return STATUS_CONFIG.completed;
+  return STATUS_CONFIG.pending;
+}
+
+function isCompletedStatus(status: string | undefined): boolean {
+  return status === "completed" || status === "done";
+}
 
 export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
   const input = (part.input ?? {}) as UpdatePlanInputShape;
   const goal = input.goal?.trim() ?? "";
   const steps = Array.isArray(input.steps) ? input.steps : [];
   const total = steps.length;
-  const doneCount = steps.filter((s) => s.status === "done").length;
+  const completedCount = steps.filter((s) => isCompletedStatus(s.status)).length;
   const hasInProgress = steps.some((s) => s.status === "in_progress");
-  const progress = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+  const progress = total > 0 ? Math.round((completedCount / total) * 100) : 0;
 
   const state = part.state ?? "input-streaming";
   const isStreaming = state === "input-streaming" || state === "input-available";
@@ -86,11 +92,11 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
             ].join(" ")}
           />
           <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-700">
-            plan · update_plan
+            plan · todo_write
             {isStreaming && !isDone ? " · live" : ""}
           </span>
           <span className="ml-auto font-mono text-[10px] tabular-nums text-slate-600">
-            {doneCount} / {total} done
+            {completedCount} / {total} done
           </span>
         </div>
 
@@ -114,8 +120,8 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
 
         <ol className="space-y-1.5">
           {steps.map((step, idx) => {
-            const cfg =
-              STATUS_CONFIG[step.status] ?? STATUS_CONFIG.pending;
+            const cfg = resolveStatusConfig(step.status);
+            const isCompleted = isCompletedStatus(step.status);
             return (
               <li
                 key={step.id || `step-${idx}`}
@@ -150,11 +156,9 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
                     "shrink-0 rounded-sm border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em]",
                     step.status === "in_progress"
                       ? "border-sky-500 bg-white text-sky-700"
-                      : step.status === "done"
+                      : isCompleted
                         ? "border-emerald-500 bg-white text-emerald-700"
-                        : step.status === "blocked"
-                          ? "border-rose-500 bg-white text-rose-700"
-                          : "border-slate-300 bg-white text-slate-500",
+                        : "border-slate-300 bg-white text-slate-500",
                   ].join(" ")}
                 >
                   {cfg.label}

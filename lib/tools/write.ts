@@ -1,30 +1,27 @@
 import path from "node:path";
 
+import { tool } from "ai";
 import { z } from "zod";
 
 import type { Sandbox } from "@/lib/sandbox/interface";
-import { approvedTool } from "@/lib/tool-helpers";
 import { toolErr, toolOk } from "@/lib/tool-result";
 import { resolveWorkspacePath } from "@/lib/workspaces";
-import {
-  getBypassPermissions,
-  getWorkspaceToolContext,
-} from "@/lib/workspace-tools";
+
+import { getWorkspaceToolContext } from "./context";
 
 /**
- * 写入工具的设计目标：
- * - 所有改动都通过 approval 机制让用户在 UI 上亲自点同意。
- * - 路径解析统一复用 `resolveWorkspacePath`，拒绝任何 ".." 逃逸。
- * - Zod 描述文案强调"先读后改"，降低模型误改的概率。
+ * `write` + `edit` —— 写入工具。命名对齐 open-agents `tools/write.ts`，
+ * 一个文件 export 两个工具（write 整文件覆盖，edit search-replace）。
  *
- * 实现细节：两个工具都走 `approvedTool`（见 lib/tool-helpers.ts），
- * `needsApproval` 的语义是"除非会话开了 bypassPermissions，否则一律要弹卡"。
- * execute 只在用户点同意之后才会跑，里面不用重复做审批判断。
- *
- * P5: IO 全走 sandbox（sandbox.readFile / writeFile / mkdir）；approval 链路一行未动。
+ * **不走审批**——跟 open-agents / codex 对齐：写文件不弹审批卡，直接落盘。
+ * 安全靠两条：
+ *   1. `resolveWorkspacePath` + LocalSandbox 内部校验，拒绝任何 ".." 逃逸；
+ *   2. 用户事后通过 git status / chat 历史 review 改了什么。
+ * 真正需要审批的副作用集中在 `shell` 工具——那里走 `approvedTool` + 配置化的
+ * shellApprovalPolicy。
  */
 
-const writeFileInputSchema = z.object({
+const writeInputSchema = z.object({
   relativePath: z
     .string()
     .min(1)
@@ -34,15 +31,9 @@ const writeFileInputSchema = z.object({
   content: z
     .string()
     .describe("Full UTF-8 content to write. Will overwrite the file entirely."),
-  reason: z
-    .string()
-    .optional()
-    .describe(
-      "Short, human-readable reason for this write. Shown in the approval UI.",
-    ),
 });
 
-const editFileInputSchema = z.object({
+const editInputSchema = z.object({
   relativePath: z
     .string()
     .min(1)
@@ -63,12 +54,6 @@ const editFileInputSchema = z.object({
     .optional()
     .describe(
       "Replace every occurrence instead of requiring a unique match. Default: false.",
-    ),
-  reason: z
-    .string()
-    .optional()
-    .describe(
-      "Short, human-readable reason for this edit. Shown in the approval UI.",
     ),
 });
 
@@ -97,7 +82,7 @@ async function readFileIfExists(sandbox: Sandbox, absolutePath: string) {
   }
 }
 
-export const writeFileTool = approvedTool({
+export const writeTool = tool({
   description: [
     "Write UTF-8 content to a workspace file. Overwrites the file entirely if it exists; creates it (with parent directories) otherwise.",
     "",
@@ -107,17 +92,15 @@ export const writeFileTool = approvedTool({
     "- Generating code or configuration from scratch for a task.",
     "",
     "WHEN NOT TO USE:",
-    "- Small, localized edits inside an existing file (prefer `edit_file`).",
-    "- Reading files (use `read_file`).",
+    "- Small, localized edits inside an existing file (prefer `edit`).",
+    "- Reading files (use `read`).",
     "",
     "IMPORTANT:",
-    "- Always read the file first with `read_file` before overwriting it.",
+    "- Always read the file first with `read` before overwriting it.",
     "- Never proactively create docs (*.md) unless the user explicitly asks.",
     "- Never write files that contain secrets (.env, credentials, api keys).",
-    "- The user must approve every write in the UI; state your `reason` clearly.",
   ].join("\n"),
-  inputSchema: writeFileInputSchema,
-  needsApproval: (_input, ctx) => !getBypassPermissions(ctx),
+  inputSchema: writeInputSchema,
   execute: async ({ content, relativePath }, { experimental_context }) => {
     const { sandbox } = getWorkspaceToolContext(experimental_context);
     const workspaceRoot = sandbox.workingDirectory;
@@ -143,28 +126,26 @@ export const writeFileTool = approvedTool({
   },
 });
 
-export const editFileTool = approvedTool({
+export const editTool = tool({
   description: [
     "Replace an exact text fragment inside an existing workspace file (search-replace).",
     "",
     "WHEN TO USE:",
     "- Small, precise edits to an existing file you have already read.",
     "- Renaming a symbol within a single file (use `replaceAll: true`).",
-    "- Changing a specific block that matches byte-for-byte what `read_file` returned.",
+    "- Changing a specific block that matches byte-for-byte what `read` returned.",
     "",
     "WHEN NOT TO USE:",
-    "- Creating new files (use `write_file`).",
-    "- Large structural rewrites (use `write_file`).",
+    "- Creating new files (use `write`).",
+    "- Large structural rewrites (use `write`).",
     "- Multi-file refactors (call this tool multiple times, once per file).",
     "",
     "USAGE:",
     "- `oldString` must match EXACTLY, including indentation and trailing whitespace.",
     "- By default `oldString` must appear exactly once; otherwise set `replaceAll: true`.",
     "- Never include line-number prefixes (`42: `) from the read output.",
-    "- The user must approve every edit in the UI; state your `reason` clearly.",
   ].join("\n"),
-  inputSchema: editFileInputSchema,
-  needsApproval: (_input, ctx) => !getBypassPermissions(ctx),
+  inputSchema: editInputSchema,
   execute: async (
     { newString, oldString, relativePath, replaceAll = false },
     { experimental_context },
@@ -182,13 +163,13 @@ export const editFileTool = approvedTool({
 
       if (previous === null) {
         return toolErr(
-          `File not found: ${relativePath}. Use write_file to create a new file.`,
+          `File not found: ${relativePath}. Use write to create a new file.`,
         );
       }
 
       if (!previous.includes(oldString)) {
         return toolErr(
-          "oldString was not found. Check whitespace/indentation and ensure the text matches read_file output byte-for-byte.",
+          "oldString was not found. Check whitespace/indentation and ensure the text matches read output byte-for-byte.",
         );
       }
 
@@ -222,12 +203,3 @@ export const editFileTool = approvedTool({
     }
   },
 });
-
-/**
- * 带写入能力的完整工具集。
- * 把 readonly 和 write 保持在两个导出里，方便在不同 access mode 下灵活组合。
- */
-export const writeToolset = {
-  write_file: writeFileTool,
-  edit_file: editFileTool,
-};

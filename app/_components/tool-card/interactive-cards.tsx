@@ -44,7 +44,7 @@ function CardShell({
   );
 }
 
-// --- ask_question --------------------------------------------------------
+// --- ask_user_question ---------------------------------------------------
 
 type AskQuestionInput = { question: string; placeholder?: string };
 
@@ -59,14 +59,14 @@ function AskQuestionCard({ part, onToolOutput }: InteractiveCardProps) {
     if (!canSubmit) return;
     setSubmitted(true);
     onToolOutput({
-      tool: "ask_question",
+      tool: "ask_user_question",
       toolCallId: part.toolCallId!,
       output: { answer: answer.trim() },
     });
   }
 
   return (
-    <CardShell toolName="ask_question">
+    <CardShell toolName="ask_user_question">
       <div className="mb-3 text-[15px] leading-7 text-slate-900">
         {input.question || "(missing question)"}
       </div>
@@ -303,7 +303,7 @@ export const interactiveCardRegistry: Record<
   string,
   ComponentType<InteractiveCardProps>
 > = {
-  ask_question: AskQuestionCard,
+  ask_user_question: AskQuestionCard,
   ask_choice: AskChoiceCard,
   show_reference: ShowReferenceCard,
 };

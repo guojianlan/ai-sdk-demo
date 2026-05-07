@@ -10,25 +10,46 @@ import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
+// 直接 import 单文件，绕开 `@/lib/tools` barrel——后者会拉到 task.ts → explorer.ts
+// → devtools (node:fs)，client bundle 编译会挂。
+import {
+  DEFAULT_SHELL_APPROVAL_POLICY,
+  SHELL_APPROVAL_POLICIES,
+  type ShellApprovalPolicy,
+} from "@/lib/tools/shell-approval";
 import type { WorkspaceOption } from "@/app/_lib/chat-session";
 
 import { Eyebrow } from "./Eyebrow";
 
 /**
- * 新建会话时的工作区/访问模式/bypass 选择器（modal 形式）。
+ * 新建会话时的工作区 / 访问模式 / shell 审批策略选择器（modal 形式）。
  *
- * 表单的本地 state（当前选中的工作区、自定义路径、访问模式、是否 bypass）
- * 完全内聚在这个组件里；Home 只负责传 `workspaces` 和响应 `onSubmit`。
+ * 表单的本地 state 完全内聚在这个组件里；Home 只负责传 `workspaces` 和响应 `onSubmit`。
  *
  * 重置策略：**不写 reset useEffect**。Home 用条件渲染 `{open && <WorkspacePicker ... />}`
  * 控制显示，每次打开都是一次全新 mount，useState 的 lazy initializer 自然跑一遍，
  * 回到默认值 + 自动选中第一个候选工作区。这样避开了 react-hooks/set-state-in-effect 警告。
  */
 
+const SHELL_POLICY_LABELS: Record<ShellApprovalPolicy, string> = {
+  never: "Never · 全部直接跑",
+  untrusted: "Untrusted · 仅未知命令弹审批（默认）",
+  always: "Always · 任何命令都弹审批",
+};
+
+const SHELL_POLICY_DESCRIPTIONS: Record<ShellApprovalPolicy, string> = {
+  never:
+    "任何 shell 命令直接跑、不弹审批。适合无人值守 / 自动化脚本场景，*不要*用于生产 demo。",
+  untrusted:
+    "已知安全的只读命令（ls / cat / git status / git diff / grep 等）直接跑；其它命令（包括 npm run、git push、curl 等）需要你点同意才执行。",
+  always:
+    "每条 shell 命令都弹卡让你点同意。最保守，agent 跑得很慢但完全可控。",
+};
+
 export type WorkspacePickerSubmit = {
   workspace: WorkspaceOption;
   workspaceAccessMode: WorkspaceAccessMode;
-  bypassPermissions: boolean;
+  shellApprovalPolicy: ShellApprovalPolicy;
 };
 
 function getPathLabel(root: string): string {
@@ -53,8 +74,8 @@ export function WorkspacePicker({
   const [customWorkspaceRoot, setCustomWorkspaceRoot] = useState("");
   const [selectedAccessMode, setSelectedAccessMode] =
     useState<WorkspaceAccessMode>(DEFAULT_WORKSPACE_ACCESS_MODE);
-  const [selectedBypassPermissions, setSelectedBypassPermissions] =
-    useState(false);
+  const [selectedShellPolicy, setSelectedShellPolicy] =
+    useState<ShellApprovalPolicy>(DEFAULT_SHELL_APPROVAL_POLICY);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,7 +100,7 @@ export function WorkspacePicker({
     onSubmit({
       workspace,
       workspaceAccessMode: selectedAccessMode,
-      bypassPermissions: selectedBypassPermissions,
+      shellApprovalPolicy: selectedShellPolicy,
     });
   }
 
@@ -192,48 +213,36 @@ export function WorkspacePicker({
               </div>
             </label>
 
-            <div>
+            <label className="block">
               <div className="mb-2 flex items-center gap-2">
-                <Eyebrow>04 · 批准策略</Eyebrow>
+                <Eyebrow>04 · Shell 审批策略</Eyebrow>
                 <span className="h-px flex-1 bg-slate-200" />
               </div>
-              <label
-                className={[
-                  "flex cursor-pointer items-start gap-3 rounded-md border p-3.5 transition-colors duration-200",
-                  selectedBypassPermissions
-                    ? "border-amber-500 bg-amber-50"
-                    : "border-slate-300 bg-white hover:border-slate-900",
-                ].join(" ")}
+              <select
+                value={selectedShellPolicy}
+                onChange={(event) =>
+                  setSelectedShellPolicy(
+                    event.currentTarget.value as ShellApprovalPolicy,
+                  )
+                }
+                disabled={selectedAccessMode !== "workspace-tools"}
+                className="w-full cursor-pointer rounded-md border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-colors duration-200 focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
               >
-                <input
-                  type="checkbox"
-                  checked={selectedBypassPermissions}
-                  onChange={(event) =>
-                    setSelectedBypassPermissions(event.currentTarget.checked)
-                  }
-                  disabled={selectedAccessMode !== "workspace-tools"}
-                  className="mt-0.5 h-4 w-4 cursor-pointer accent-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">
-                      bypass permissions
-                    </span>
-                    <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                      危险
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[13px] leading-6 text-slate-700">
-                    自动批准本会话内所有写入。Agent 改文件时不再弹确认卡片，直接落盘。
-                  </div>
-                  <div className="mt-1 text-[12px] leading-5 text-slate-500">
-                    仅在 access mode 是{" "}
-                    <span className="font-mono">workspace-tools</span>{" "}
-                    时可用（no-tools 模式下根本没有写入工具，这个开关没意义）。
-                  </div>
+                {SHELL_APPROVAL_POLICIES.map((policy) => (
+                  <option key={policy} value={policy}>
+                    {SHELL_POLICY_LABELS[policy]}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-2 text-[12px] leading-6 text-slate-500">
+                {SHELL_POLICY_DESCRIPTIONS[selectedShellPolicy]}
+              </div>
+              {selectedAccessMode !== "workspace-tools" && (
+                <div className="mt-1 text-[12px] leading-5 text-slate-400">
+                  no-tools 模式下没有 shell 工具，这个策略不生效。
                 </div>
-              </label>
-            </div>
+              )}
+            </label>
 
             <div className="rounded-md border border-slate-300 bg-slate-50 px-4 py-3">
               <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
@@ -252,13 +261,12 @@ export function WorkspacePicker({
               <div
                 className={[
                   "mt-1 font-mono text-[12px]",
-                  selectedBypassPermissions ? "text-amber-700" : "text-slate-500",
+                  selectedShellPolicy === "never"
+                    ? "text-amber-700"
+                    : "text-slate-500",
                 ].join(" ")}
               >
-                approval ·{" "}
-                {selectedBypassPermissions
-                  ? "bypass（自动执行，不弹确认）"
-                  : "required（每次写入都弹确认）"}
+                shell · {SHELL_POLICY_LABELS[selectedShellPolicy]}
               </div>
             </div>
 

@@ -12,7 +12,7 @@ export type ApprovalHandler = (params: {
 }) => void;
 
 /**
- * 交互工具（ask_question / ask_choice / show_reference）用来把用户的 output
+ * 交互工具（ask_user_question / ask_choice / show_reference）用来把用户的 output
  * 回灌给 AI SDK。底层是 `useChat` 返回的 `addToolOutput`。
  *
  * 不直接把 AI SDK 的泛型类型暴露到 props 是故意的——那个泛型依赖 UIMessage

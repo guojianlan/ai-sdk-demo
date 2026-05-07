@@ -47,6 +47,29 @@ const gatewayModelId =
   pickString(process.env.OPENAI_COMPAT_MODEL, process.env.GEMINI_MODEL) ??
   "gemini-2.5-flash";
 
+/**
+ * Reasoning effort（OpenAI gpt-5 系 / o1 系列等推理模型支持的
+ * `reasoning_effort` 参数）。可选值：`minimal / low / medium / high`。
+ * 未设置 → 不注入字段，让 provider 用默认（通常是 medium）。
+ */
+const gatewayReasoningEffort = (() => {
+  const raw = pickString(process.env.OPENAI_COMPAT_REASONING_EFFORT);
+  if (!raw) return undefined;
+  const lower = raw.toLowerCase();
+  if (
+    lower === "minimal" ||
+    lower === "low" ||
+    lower === "medium" ||
+    lower === "high"
+  ) {
+    return lower;
+  }
+  console.warn(
+    `[env] unrecognized OPENAI_COMPAT_REASONING_EFFORT=${raw}; ignoring.`,
+  );
+  return undefined;
+})();
+
 // 缺 API key → 模块加载期直接 crash，而不是等到请求到达路由才 500。
 // 本地 key-less 模型请在 .env.local 里把 OPENAI_COMPAT_API_KEY 设成任意非空字符串。
 if (!gatewayApiKey) {
@@ -106,6 +129,8 @@ export const env = {
     baseURL: gatewayBaseURL,
     apiKey: gatewayApiKey,
     modelId: gatewayModelId,
+    /** 可选 reasoning_effort，值在 minimal/low/medium/high 之中，否则 undefined。 */
+    reasoningEffort: gatewayReasoningEffort,
   },
   /** P4-b context compaction 配置。 */
   compaction: {

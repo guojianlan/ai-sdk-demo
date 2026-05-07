@@ -41,7 +41,7 @@ export const chatAccessModeExamples: Record<
     },
     notes: [
       WORKSPACE_ACCESS_MODE_DESCRIPTIONS["workspace-tools"],
-      "后端会向模型暴露 list_files、search_code、read_file 三个工具。",
+      "后端会向模型暴露 glob、grep、read 三个工具。",
       "模型可以通过这些工具间接触发 fs / rg，并基于真实文件回答问题。",
     ],
   },

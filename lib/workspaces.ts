@@ -25,12 +25,6 @@ export type WorkspaceDescriptor = {
   isCurrentProject: boolean;
 };
 
-export type WorkspaceEntry = {
-  path: string;
-  type: "file" | "directory";
-  size: number | null;
-};
-
 export type WorkspaceSearchResult = {
   path: string;
   line: number;
@@ -162,100 +156,6 @@ export function resolveWorkspacePath(
 
 function shouldIgnoreEntry(name: string) {
   return IGNORED_DIRECTORY_NAMES.has(name);
-}
-
-/**
- * 用于 UI 和工具调用的受限目录遍历。
- * depth 和 limit 两个限制可以让返回结果更稳定，避免把大量无关内容塞给模型。
- *
- * P5: 改走 sandbox.readdir / sandbox.stat。`sandbox.workingDirectory` 即原来的
- * `workspaceRoot`；resolveWorkspacePath 仍负责 `..` escape 校验（local sandbox
- * 内部也会再校一次，双重防御）。
- */
-export async function listWorkspaceEntries(
-  sandbox: Sandbox,
-  relativePath = ".",
-  depth = 2,
-  limit = 200,
-): Promise<WorkspaceEntry[]> {
-  const workspaceRoot = sandbox.workingDirectory;
-  const results: WorkspaceEntry[] = [];
-  const rootPath = resolveWorkspacePath(workspaceRoot, relativePath);
-
-  async function walk(currentAbsolutePath: string, remainingDepth: number) {
-    if (results.length >= limit) {
-      return;
-    }
-
-    const stats = await sandbox.stat(currentAbsolutePath);
-
-    if (stats.isFile()) {
-      results.push({
-        path: path.relative(workspaceRoot, currentAbsolutePath) || ".",
-        type: "file",
-        size: stats.size,
-      });
-
-      return;
-    }
-
-    const directoryEntries = await sandbox.readdir(currentAbsolutePath, {
-      withFileTypes: true,
-    });
-
-    const sortedEntries = directoryEntries.sort((left, right) => {
-      if (left.isDirectory() && !right.isDirectory()) {
-        return -1;
-      }
-
-      if (!left.isDirectory() && right.isDirectory()) {
-        return 1;
-      }
-
-      return left.name.localeCompare(right.name, "zh-CN");
-    });
-
-    for (const entry of sortedEntries) {
-      if (results.length >= limit) {
-        break;
-      }
-
-      if (shouldIgnoreEntry(entry.name)) {
-        continue;
-      }
-
-      const nextAbsolutePath = path.join(currentAbsolutePath, entry.name);
-      const nextRelativePath = path.relative(workspaceRoot, nextAbsolutePath);
-
-      if (entry.isDirectory()) {
-        results.push({
-          path: nextRelativePath,
-          type: "directory",
-          size: null,
-        });
-
-        if (remainingDepth > 1) {
-          await walk(nextAbsolutePath, remainingDepth - 1);
-        }
-
-        continue;
-      }
-
-      if (entry.isFile()) {
-        const entryStats = await sandbox.stat(nextAbsolutePath);
-
-        results.push({
-          path: nextRelativePath,
-          type: "file",
-          size: entryStats.size,
-        });
-      }
-    }
-  }
-
-  await walk(rootPath, Math.max(1, depth));
-
-  return results;
 }
 
 /**
@@ -433,6 +333,78 @@ async function searchWorkspaceWithNode(
  */
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+export type WorkspaceGlobMatch = {
+  path: string;
+  size: number;
+  modifiedAt: string;
+};
+
+/**
+ * 按 glob pattern 找文件（对齐 open-agents `glob` 工具的语义）。
+ *
+ * - pattern 用 globToRegex 解析（支持 `*` / `**` / 字面量），匹配 path-relative-to-baseDir
+ * - 跳过隐藏文件 + IGNORED_DIRECTORY_NAMES
+ * - 按 mtime 降序排序，截到 limit 条
+ * - 只返回 file，不返回 directory（跟 open-agents 一致：找文件用 glob，列目录另说）
+ */
+export async function globWorkspace(
+  sandbox: Sandbox,
+  pattern: string,
+  basePath = ".",
+  limit = 100,
+): Promise<WorkspaceGlobMatch[]> {
+  const workspaceRoot = sandbox.workingDirectory;
+  const baseAbsolute = resolveWorkspacePath(workspaceRoot, basePath);
+  const regex = globToRegex(pattern);
+  const matches: { absolutePath: string; size: number; mtimeMs: number }[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    let entries: Awaited<ReturnType<typeof sandbox.readdir>>;
+    try {
+      entries = await sandbox.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (shouldIgnoreEntry(entry.name)) continue;
+
+      const full = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const relToBase = path.relative(baseAbsolute, full);
+      if (!regex.test(relToBase)) continue;
+
+      try {
+        const stats = await sandbox.stat(full);
+        matches.push({
+          absolutePath: full,
+          size: stats.size,
+          mtimeMs: stats.mtimeMs,
+        });
+      } catch {
+        // permission/race—skip
+      }
+    }
+  }
+
+  await walk(baseAbsolute);
+
+  matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  return matches.slice(0, Math.max(1, limit)).map((m) => ({
+    path: path.relative(workspaceRoot, m.absolutePath),
+    size: m.size,
+    modifiedAt: new Date(m.mtimeMs).toISOString(),
+  }));
 }
 
 /**
