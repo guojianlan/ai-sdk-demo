@@ -12,10 +12,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_WORKSPACE_ACCESS_MODE } from "@/lib/chat-access-mode";
 import {
   createSession,
+  createSessionOnApi,
   deriveSessionPreview,
   deriveSessionTitle,
-  sanitizeSessions,
+  fetchSessions,
   STORAGE_KEY,
+  updateSessionTitleOnApi,
   URL_SESSION_PARAM,
   type ChatSession,
   type WorkspaceOption,
@@ -41,7 +43,9 @@ import {
  * 需要改 UI 细节：去对应的 _components 文件改；需要改状态/流程：改这里。
  */
 export default function Home() {
-  const [sessions, setSessions] = useState<ChatSession[]>([createSession()]);
+  // P3-c: sessions 不再用 localStorage 初始化——挂载时从 /api/sessions 拉。
+  // 初始 [] 表示"还没拉过"，hydration effect 跑完才填充。
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState("");
   const [draft, setDraft] = useState("");
   const [storageReady, setStorageReady] = useState(false);
@@ -80,22 +84,8 @@ export default function Home() {
         };
         const nextWorkspaces = data.workspaces ?? [];
         setWorkspaces(nextWorkspaces);
-
-        // 首次加载：第一个 session 还没绑定工作区，就默认挂上第一个候选，
-        // 避免用户一进来就对着空会话发愣。
-        if (nextWorkspaces[0]) {
-          setSessions((currentSessions) =>
-            currentSessions.map((session, index) =>
-              index === 0 && !session.workspaceRoot
-                ? {
-                    ...session,
-                    workspaceRoot: nextWorkspaces[0].root,
-                    workspaceName: nextWorkspaces[0].name,
-                  }
-                : session,
-            ),
-          );
-        }
+        // P3-c: 不再为空 session 默认填充工作区——空列表时让 EmptyState +
+        // picker modal 引导用户主动建第一个会话。
       } catch (error) {
         setWorkspacesError(
           error instanceof Error ? error.message : "加载工作区失败。",
@@ -107,75 +97,58 @@ export default function Home() {
     void loadWorkspaces();
   }, []);
 
-  // --- localStorage + URL 同步 ---
-  // 一次性的水合逻辑：URL `?session=<id>` 优先，其次 localStorage，最后回落第一个 session。
+  // --- 服务端会话列表水合（P3-c）---
+  //
+  // 挂载时一次性从 `/api/sessions` 拉所有会话，按 updated_at 倒排（服务端已排好）。
+  // URL `?session=<id>` 优先决定 active；其次第一个会话；都没就 active=空（empty state）。
+  // 同时清掉历史 localStorage 残留——前一版用 `STORAGE_KEY` 持久化过 session 列表，
+  // 现在数据源是服务端，留着也不读，主动清掉省得调试时混淆。
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      const urlSessionId = new URLSearchParams(window.location.search).get(
-        URL_SESSION_PARAM,
-      );
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem(STORAGE_KEY);
+        }
+        const list = await fetchSessions();
+        if (cancelled) return;
+        setSessions(list);
 
-      if (!raw) {
-        return;
+        const urlSessionId = new URLSearchParams(window.location.search).get(
+          URL_SESSION_PARAM,
+        );
+        const urlMatchedId =
+          urlSessionId && list.some((s) => s.id === urlSessionId)
+            ? urlSessionId
+            : null;
+        setActiveChatId(urlMatchedId ?? list[0]?.id ?? "");
+      } finally {
+        if (!cancelled) {
+          setStorageReady(true);
+        }
       }
-
-      const parsed = JSON.parse(raw) as {
-        activeChatId?: string;
-        sessions?: ChatSession[];
-      };
-      const hydratedSessions = sanitizeSessions(parsed.sessions);
-      setSessions(hydratedSessions);
-
-      const urlMatchedId =
-        urlSessionId &&
-        hydratedSessions.some((session) => session.id === urlSessionId)
-          ? urlSessionId
-          : null;
-      const storageMatchedId = hydratedSessions.some(
-        (session) => session.id === parsed.activeChatId,
-      )
-        ? parsed.activeChatId
-        : null;
-
-      setActiveChatId(
-        urlMatchedId ?? storageMatchedId ?? hydratedSessions[0].id,
-      );
-    } catch {
-      // 本地存储坏掉了就当首次启动。
-    } finally {
-      setStorageReady(true);
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // activeChatId 变化时把 URL 改成 `?session=<id>`；用 replaceState 不堆 history 栈。
+  // 没有 active 会话（空列表）→ 移除 URL 参数。
   useEffect(() => {
-    if (!storageReady || !activeChatId) return;
+    if (!storageReady) return;
     const url = new URL(window.location.href);
+    if (!activeChatId) {
+      if (url.searchParams.has(URL_SESSION_PARAM)) {
+        url.searchParams.delete(URL_SESSION_PARAM);
+        window.history.replaceState(window.history.state, "", url.toString());
+      }
+      return;
+    }
     if (url.searchParams.get(URL_SESSION_PARAM) === activeChatId) return;
     url.searchParams.set(URL_SESSION_PARAM, activeChatId);
     window.history.replaceState(window.history.state, "", url.toString());
   }, [activeChatId, storageReady]);
-
-  // 持久化到 localStorage。
-  useEffect(() => {
-    if (!storageReady) return;
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ activeChatId, sessions }),
-    );
-  }, [activeChatId, sessions, storageReady]);
-
-  // 没有激活的 session → 自动落第一个。必须等 storage 水合完再跑：
-  // 否则会和 localStorage 加载 effect 竞态——本 effect 拿到 sessions 的初值（一个
-  // 全新随机 id 的 session），把 activeChatId 设成那个新 id，最后把刚水合好的旧
-  // 会话覆盖掉。reload 时表现为 ?session=<新 id>、原对话消失。
-  useEffect(() => {
-    if (!storageReady) return;
-    if (!activeChatId && sessions[0]) {
-      setActiveChatId(sessions[0].id);
-    }
-  }, [activeChatId, sessions, storageReady]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeChatId) ?? sessions[0],
@@ -345,8 +318,8 @@ export default function Home() {
     });
   }, [activeSessionId, messages]);
 
-  // P3-b: useChat 的 messages 不再写回 session（服务端 SQLite 已经持久化）。
-  // 只把派生的 title / preview / updatedAt 写回 localStorage，供侧栏展示。
+  // P3-c: messages 派生 title/preview。preview 是纯 UI 字段（侧栏展示），不持久化；
+  // title 变化时 PATCH /api/sessions/:id 同步给服务端（best-effort，失败 swallow）。
   useEffect(() => {
     if (!activeSessionId || !isHydrated) return;
     const nextTitle = deriveSessionTitle(messages);
@@ -354,6 +327,7 @@ export default function Home() {
     const nextPreview =
       rawPreview.length > 120 ? `${rawPreview.slice(0, 120)}...` : rawPreview;
 
+    let titleActuallyChanged = false;
     setSessions((currentSessions) => {
       let changed = false;
       const nextSessions = currentSessions.map((session) => {
@@ -362,6 +336,7 @@ export default function Home() {
         const previewChanged = session.preview !== nextPreview;
         if (!titleChanged && !previewChanged) return session;
         changed = true;
+        if (titleChanged) titleActuallyChanged = true;
         return {
           ...session,
           title: nextTitle,
@@ -374,6 +349,11 @@ export default function Home() {
       });
       return changed ? nextSessions : currentSessions;
     });
+
+    // 仅在 title 真的变了时打 PATCH——避免每次 messages 微动都发请求。
+    if (titleActuallyChanged && nextTitle && nextTitle !== "新对话") {
+      void updateSessionTitleOnApi(activeSessionId, nextTitle);
+    }
   }, [activeSessionId, isHydrated, messages]);
 
   // --- 用户动作 ---
@@ -418,15 +398,20 @@ export default function Home() {
     if (status === "streaming" || status === "submitted") {
       await handleStop();
     }
-    const nextSession = createSession(
+    const draftSession = createSession(
       workspace,
       workspaceAccessMode,
       shellApprovalPolicy,
     );
-    // 新会话肯定没 DB 历史，直接预填空数组，免得 hydrate effect 再发一次多余请求。
-    setHydratedMessages((prev) => ({ ...prev, [nextSession.id]: [] }));
-    setSessions((currentSessions) => [nextSession, ...currentSessions]);
-    setActiveChatId(nextSession.id);
+    // 新会话没 DB 历史，预填空数组省一次 GET /api/chat/history。
+    setHydratedMessages((prev) => ({ ...prev, [draftSession.id]: [] }));
+
+    // 服务端建 thread 元数据（带 accessMode / shellApprovalPolicy）。
+    // 不等返回也 OK（chat route 的 upsertThread 是兜底），但等一下能拿到服务端
+    // canonical 的 created_at / updated_at，sidebar 排序更准。
+    const persistedSession = await createSessionOnApi(draftSession);
+    setSessions((currentSessions) => [persistedSession, ...currentSessions]);
+    setActiveChatId(persistedSession.id);
     setDraft("");
     setPickerOpen(false);
   }

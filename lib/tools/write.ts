@@ -1,11 +1,12 @@
 import path from "node:path";
 
-import { tool } from "ai";
 import { z } from "zod";
 
+import { env } from "@/lib/env";
 import type { Sandbox } from "@/lib/sandbox/interface";
+import { approvedTool } from "@/lib/tool-helpers";
 import { toolErr, toolOk } from "@/lib/tool-result";
-import { resolveWorkspacePath } from "@/lib/workspaces";
+import { isDotEnvFilePath, resolveWorkspacePath } from "@/lib/workspaces";
 
 import { getWorkspaceToolContext } from "./context";
 
@@ -13,8 +14,11 @@ import { getWorkspaceToolContext } from "./context";
  * `write` + `edit` —— 写入工具。命名对齐 open-agents `tools/write.ts`，
  * 一个文件 export 两个工具（write 整文件覆盖，edit search-replace）。
  *
- * **不走审批**——跟 open-agents / codex 对齐：写文件不弹审批卡，直接落盘。
- * 安全靠两条：
+ * 审批策略：默认免审批（跟 open-agents / codex 对齐：普通写文件不弹卡，直接落盘）。
+ * 例外——命中 `.env` 系列文件时强制弹审批，避免模型不小心写入/覆盖凭据文件
+ * （对齐 open-agents `write.ts:44, 148`）。
+ *
+ * 其它安全靠两条：
  *   1. `resolveWorkspacePath` + LocalSandbox 内部校验，拒绝任何 ".." 逃逸；
  *   2. 用户事后通过 git status / chat 历史 review 改了什么。
  * 真正需要审批的副作用集中在 `shell` 工具——那里走 `approvedTool` + 配置化的
@@ -82,7 +86,7 @@ async function readFileIfExists(sandbox: Sandbox, absolutePath: string) {
   }
 }
 
-export const writeTool = tool({
+export const writeTool = approvedTool({
   description: [
     "Write UTF-8 content to a workspace file. Overwrites the file entirely if it exists; creates it (with parent directories) otherwise.",
     "",
@@ -98,9 +102,11 @@ export const writeTool = tool({
     "IMPORTANT:",
     "- Always read the file first with `read` before overwriting it.",
     "- Never proactively create docs (*.md) unless the user explicitly asks.",
-    "- Never write files that contain secrets (.env, credentials, api keys).",
+    "- Never write files that contain secrets (.env, credentials, api keys); writes to `.env*` paths require explicit user approval.",
   ].join("\n"),
   inputSchema: writeInputSchema,
+  needsApproval: ({ relativePath }) =>
+    env.dotEnvFileApproval && isDotEnvFilePath(relativePath),
   execute: async ({ content, relativePath }, { experimental_context }) => {
     const { sandbox } = getWorkspaceToolContext(experimental_context);
     const workspaceRoot = sandbox.workingDirectory;
@@ -126,7 +132,7 @@ export const writeTool = tool({
   },
 });
 
-export const editTool = tool({
+export const editTool = approvedTool({
   description: [
     "Replace an exact text fragment inside an existing workspace file (search-replace).",
     "",
@@ -144,8 +150,11 @@ export const editTool = tool({
     "- `oldString` must match EXACTLY, including indentation and trailing whitespace.",
     "- By default `oldString` must appear exactly once; otherwise set `replaceAll: true`.",
     "- Never include line-number prefixes (`42: `) from the read output.",
+    "- Edits to `.env*` paths require explicit user approval.",
   ].join("\n"),
   inputSchema: editInputSchema,
+  needsApproval: ({ relativePath }) =>
+    env.dotEnvFileApproval && isDotEnvFilePath(relativePath),
   execute: async (
     { newString, oldString, relativePath, replaceAll = false },
     { experimental_context },

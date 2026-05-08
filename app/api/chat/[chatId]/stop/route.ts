@@ -3,7 +3,7 @@ import { getRun } from "workflow/api";
 import {
   compareAndSetActiveStreamId,
   getActiveStreamId,
-} from "@/lib/chat-store";
+} from "@/lib/persistence";
 
 export async function POST(
   _request: Request,

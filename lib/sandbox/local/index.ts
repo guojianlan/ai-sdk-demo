@@ -8,6 +8,7 @@ import type {
   Sandbox,
   SandboxStats,
 } from "../interface";
+import { wrapCommandForSandbox } from "./asrt";
 
 /**
  * 本机 sandbox 实现 —— fs + child_process。
@@ -19,6 +20,9 @@ import type {
  * - `exec` 使用 `shell: true`，方便构造带 quote / 管道的命令（例如 ripgrep + glob）。
  *   **代价是命令字符串必须由调用方保证可信**：不要让 model 直接控制 command 字符串，
  *   只给受控工具（如 grep）构造命令时使用，并在那一层做 shell-escape。
+ * - 当 `SANDBOX_ENABLED=true` 时，`exec` 会通过 `wrapCommandForSandbox` 把命令包到
+ *   ASRT (sandbox-exec / bwrap) 里跑——见 `./asrt.ts`。fs 操作不经过 ASRT，仍靠
+ *   `resolveWorkspacePath` 校验。
  *
  * cloud-only 字段（snapshot / extendTimeout / domain / execDetached）不实现。
  */
@@ -85,10 +89,17 @@ export class LocalSandbox implements Sandbox {
     // cwd 同样过校验，避免传 "../foo" 跳出 workspace。
     const safeCwd = resolveWorkspacePath(this.workingDirectory, cwd);
 
+    // 沙箱开关开 → 用 ASRT 包一层；开关关 / 平台不支持 / 初始化失败 → 原样返回。
+    const wrappedCommand = await wrapCommandForSandbox(
+      command,
+      this.workingDirectory,
+      options?.signal,
+    );
+
     return new Promise<ExecResult>((resolve) => {
       // shell:true：让调用方可以传完整 command line（带 args / quote）。
       // 安全前提：command 必须由调用方 escape；不要把模型直接给的字符串塞进来。
-      const child = spawn(command, {
+      const child = spawn(wrappedCommand, {
         cwd: safeCwd,
         shell: true,
         signal: options?.signal,

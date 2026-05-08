@@ -159,6 +159,23 @@ function shouldIgnoreEntry(name: string) {
 }
 
 /**
+ * 检测路径是否指向 `.env` 系列文件（`.env`、`.env.local`、`.env.production`、`.envrc`…）。
+ *
+ * 命名对齐 open-agents `tools/path-security.ts:isDotEnvFilePath`。
+ * 用途：read/write/edit 工具在 `needsApproval` 里调用——命中 → 弹审批，
+ * 让用户对"模型读/写敏感文件"有最后一道确认。**不是硬拒绝**，因为有些场景
+ * 用户确实想看 .env.example、修 .env.local 等。
+ *
+ * 只看 basename，跨目录都管：`config/.env.local` 也会命中。
+ */
+export function isDotEnvFilePath(filePath: string): boolean {
+  const basename = path
+    .basename(filePath.replaceAll("\\", "/"))
+    .toLowerCase();
+  return basename.startsWith(".env");
+}
+
+/**
  * 从工作区读取 UTF-8 文本文件，并通过字符上限控制返回体积，
  * 让工具结果保持在模型和流式 UI 都能承受的范围内。
  *

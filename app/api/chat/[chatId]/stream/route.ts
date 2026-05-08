@@ -8,7 +8,7 @@ import { getRun } from "workflow/api";
 import {
   compareAndSetActiveStreamId,
   getActiveStreamId,
-} from "@/lib/chat-store";
+} from "@/lib/persistence";
 import {
   createCancelableReadableStream,
   dropReasoningChunks,

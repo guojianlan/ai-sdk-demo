@@ -115,6 +115,59 @@ const compactionKeepRecentMessages = parseIntOr(
 // 默认 500 对齐 open-agents；普通对话远到不了，主要防失控死循环。
 const outerStepLimit = parseIntOr(process.env.CHAT_OUTER_STEP_LIMIT, 500);
 
+/**
+ * 持久化存储根目录。
+ *
+ * 设计：默认 `~/.local-agent/`——刻意起一个 **跟当前项目名解耦** 的中性名，
+ * 这样将来项目重命名 / 做桌面端 / 多项目共享会话历史时，只改这里一行就够。
+ *
+ * 目录结构（参考 codex `~/.codex/` + claude-code `~/.claude/`）：
+ *   ~/.local-agent/
+ *   ├── agent.db                       SQLite 元数据索引（线程列表、archive 状态等）
+ *   └── sessions/YYYY/MM/DD/
+ *       └── <thread-id>.jsonl          会话源真相（append-only）
+ */
+const storageDir =
+  pickString(process.env.AGENT_STORAGE_DIR) ??
+  path.join(os.homedir(), ".local-agent");
+
+/**
+ * `.env*` 文件读写是否要求审批。
+ *
+ * 背景：codex 用 OS sandbox / claude-code 用 ML classifier 来挡敏感文件，都没有
+ * 显式 .env 路径检测。我们没那两套底层防御，所以参考 open-agents 在应用层加了一道
+ * 弱保护——但它确实会在你正常折腾 .env.example / .env.local 时多弹一次。
+ *
+ * 默认 `false`（关）。打开后：read / write / edit 命中 `.env*` basename 时强制弹审批卡。
+ */
+const dotEnvFileApproval =
+  parseBoolean(process.env.DOTENV_FILE_APPROVAL) ?? false;
+
+/**
+ * OS 级沙箱（@anthropic-ai/sandbox-runtime）配置。
+ *
+ * 设计：默认关。打开后，`LocalSandbox.exec()` 把每条 shell 命令包到 sandbox-exec
+ * （macOS）/ bwrap（Linux）里跑——同 claude-code 的 sandbox 实现底层。
+ *
+ * 跨平台行为：
+ * - macOS: `sandbox-exec` 系统内置，开箱即用
+ * - Linux: 需要预装 `bwrap`（`apt install bubblewrap` / `dnf install bubblewrap`）；
+ *          没装的话初始化会失败，回落到软沙箱（不阻塞流程）
+ * - Windows: ASRT 不支持，直接走软沙箱
+ *
+ * 网络白名单：只在 sandboxEnabled=true 时生效。逗号分隔域名，比如：
+ *   SANDBOX_ALLOWED_DOMAINS=registry.npmjs.org,github.com,*.github.com
+ * 不配 → 默认全 deny（典型只读工作流足够，但 npm install / git push 会被拦）。
+ */
+const sandboxEnabled = parseBoolean(process.env.SANDBOX_ENABLED) ?? false;
+
+const sandboxAllowedDomains = (
+  pickString(process.env.SANDBOX_ALLOWED_DOMAINS) ?? ""
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
+
 export const env = {
   isProduction,
   /**
@@ -139,6 +192,16 @@ export const env = {
   },
   /** 主聊天 workflow 外层 for 循环的步数上限（对齐 open-agents 的 maxSteps=500）。 */
   outerStepLimit,
+  /** read / write / edit 命中 `.env*` 路径时是否弹审批。默认 false。 */
+  dotEnvFileApproval,
+  /** ASRT OS 沙箱配置（默认关）。 */
+  sandbox: {
+    enabled: sandboxEnabled,
+    /** 允许出网的域名清单。空数组 = 全 deny。 */
+    allowedDomains: sandboxAllowedDomains,
+  },
+  /** 持久化存储根目录（默认 `~/.local-agent/`）。 */
+  storageDir,
 } as const;
 
 /**

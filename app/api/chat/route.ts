@@ -18,7 +18,8 @@ import {
   loadSummary,
   saveMessages,
   saveSummary,
-} from "@/lib/chat-store";
+  upsertThread,
+} from "@/lib/persistence";
 import {
   buildCompactionNotice,
   compactMessages,
@@ -73,6 +74,18 @@ export async function POST(request: Request) {
     body.workspaceAccessMode,
   );
 
+  // Upsert thread on every POST —— 兜底：如果前端没显式 POST /api/sessions
+  // 创建（旧客户端 / 直接 API 调用），第一次发消息这里会补建 thread 元数据。
+  // 已存在 → no-op 返回老的，不覆盖字段。
+  await upsertThread({
+    id: chatId,
+    workspaceRoot,
+    workspaceName: body.workspaceName,
+    workspaceAccessMode,
+    shellApprovalPolicy: body.shellApprovalPolicy,
+    model: env.gateway.modelId,
+  });
+
   const activeStreamId = getActiveStreamId(chatId);
   if (activeStreamId) {
     const existingStream = await reconcileExistingActiveStream(
@@ -94,7 +107,7 @@ export async function POST(request: Request) {
   }
 
   const fullSanitized = sanitizeChatUIMessages(body.messages ?? []);
-  saveMessages(chatId, fullSanitized);
+  await saveMessages(chatId, fullSanitized);
 
   // --- P4-b context compaction 决策 ------------------------------------
   //

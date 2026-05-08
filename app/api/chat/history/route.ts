@@ -1,4 +1,4 @@
-import { loadMessages } from "@/lib/chat-store";
+import { loadMessages } from "@/lib/persistence";
 
 /**
  * GET /api/chat/history?id=<sessionId>

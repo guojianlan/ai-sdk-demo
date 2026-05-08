@@ -16,6 +16,7 @@
     "@ai-sdk/openai": "^3.0.52",
     "@ai-sdk/openai-compatible": "^2.0.41",
     "@ai-sdk/react": "^3.0.160",
+    "@anthropic-ai/sandbox-runtime": "^0.0.50",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.17.1",
     "ai": "^6.0.158",

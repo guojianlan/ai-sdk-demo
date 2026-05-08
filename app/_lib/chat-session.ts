@@ -14,12 +14,12 @@ import {
 } from "@/lib/tools/shell-approval";
 
 /**
- * 主页 chat UI 用到的客户端类型、常量和 localStorage 相关的纯函数。
- * 抽出来独立一个文件，page.tsx 和各个子组件都可以按需 import。
+ * 主页 chat UI 用到的客户端类型、常量和 API 客户端 helper。
  *
- * ⚠ P3-b 后 `ChatSession` 不再携带 `messages`：消息存在服务端 SQLite，
- * 页面挂载/切 session 时用 `GET /api/chat/history?id=<sessionId>` 拉回来。
- * localStorage 里只留 session 元数据 + 一个派生 `preview` 字段给侧栏展示。
+ * 演化：
+ * - P3-b：消息搬到服务端 SQLite；session 元数据仍在 localStorage
+ * - **P3-c（current）**：session 元数据也搬到服务端 `~/.local-agent/agent.db`，
+ *   通过 `/api/sessions/*` 路由暴露。localStorage 仅在水合时被清掉一次防迁移残留。
  */
 
 export type WorkspaceOption = {
@@ -87,52 +87,6 @@ export function createSession(
   };
 }
 
-export function sanitizeSessions(input: unknown): ChatSession[] {
-  if (!Array.isArray(input)) {
-    return [createSession()];
-  }
-
-  const sessions = input
-    .map((item) => {
-      const session = item as Partial<ChatSession> & { messages?: unknown };
-
-      if (typeof session?.id !== "string" || typeof session?.title !== "string") {
-        return null;
-      }
-
-      return {
-        id: session.id,
-        title: session.title || "新对话",
-        // 旧 snapshot 里 preview 可能不存在；没有就置空，下次消息进来会自动回填。
-        preview: typeof session.preview === "string" ? session.preview : "",
-        createdAt:
-          typeof session.createdAt === "string" && session.createdAt
-            ? session.createdAt
-            : new Date().toISOString(),
-        updatedAt:
-          typeof session.updatedAt === "string" && session.updatedAt
-            ? session.updatedAt
-            : new Date().toISOString(),
-        workspaceRoot:
-          typeof session.workspaceRoot === "string" ? session.workspaceRoot : "",
-        workspaceName:
-          typeof session.workspaceName === "string" ? session.workspaceName : "",
-        workspaceAccessMode: normalizeWorkspaceAccessMode(
-          session.workspaceAccessMode,
-        ),
-        // 迁移：旧 snapshot 里如果有 `bypassPermissions: true`，等价于之前「写入不弹卡」
-        // —— 现在写入根本不弹卡了，bypass 字段没意义。但 shell 审批是独立维度，
-        // 没法直接映射，全部回落到默认 `untrusted`。新写入的 session 一律带新字段。
-        shellApprovalPolicy: normalizeShellApprovalPolicy(
-          (session as { shellApprovalPolicy?: unknown }).shellApprovalPolicy,
-        ),
-      } satisfies ChatSession;
-    })
-    .filter((session): session is ChatSession => session !== null);
-
-  return sessions.length > 0 ? sessions : [createSession()];
-}
-
 export function extractMessageText(message?: UIMessage): string {
   if (!message) {
     return "";
@@ -176,4 +130,110 @@ export function formatTimestamp(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+// ========== API client helpers ===========================================
+//
+// 直接 fetch /api/sessions 的小封装。前端代码只跟这一层打交道，
+// 不需要知道服务端 Thread 字段名（snake_case → camelCase 已在路由层做完）。
+
+/** 服务端 `Thread` 形状（route.ts:GET /api/sessions 返回的）。 */
+type ApiThread = {
+  id: string;
+  workspaceRoot: string;
+  workspaceName: string | null;
+  workspaceAccessMode: string | null;
+  shellApprovalPolicy: string | null;
+  title: string | null;
+  messageCount: number;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt: number | null;
+};
+
+function threadToSession(thread: ApiThread): ChatSession {
+  return {
+    id: thread.id,
+    title: thread.title ?? "新对话",
+    preview: "", // 派生字段，从 messages 里算；列表里如果还没拉过 messages 就先空着
+    createdAt: new Date(thread.createdAt).toISOString(),
+    updatedAt: new Date(thread.updatedAt).toISOString(),
+    workspaceRoot: thread.workspaceRoot,
+    workspaceName: thread.workspaceName ?? "",
+    workspaceAccessMode: normalizeWorkspaceAccessMode(thread.workspaceAccessMode),
+    shellApprovalPolicy: normalizeShellApprovalPolicy(thread.shellApprovalPolicy),
+  };
+}
+
+/** GET /api/sessions —— 拉所有未归档会话。失败返回空数组。 */
+export async function fetchSessions(): Promise<ChatSession[]> {
+  try {
+    const response = await fetch("/api/sessions");
+    if (!response.ok) {
+      console.warn("[sessions] list failed:", response.status);
+      return [];
+    }
+    const data = (await response.json()) as { threads?: ApiThread[] };
+    return (data.threads ?? []).map(threadToSession);
+  } catch (error) {
+    console.warn("[sessions] list error:", error);
+    return [];
+  }
+}
+
+/**
+ * POST /api/sessions —— picker 提交时显式建 thread。
+ * 服务端 upsert：若 id 已存在直接返回老的，幂等。
+ */
+export async function createSessionOnApi(session: ChatSession): Promise<ChatSession> {
+  try {
+    const response = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: session.id,
+        workspaceRoot: session.workspaceRoot,
+        workspaceName: session.workspaceName,
+        workspaceAccessMode: session.workspaceAccessMode,
+        shellApprovalPolicy: session.shellApprovalPolicy,
+        title: session.title,
+      }),
+    });
+    if (!response.ok) {
+      console.warn("[sessions] create failed:", response.status);
+      return session;
+    }
+    const data = (await response.json()) as { thread: ApiThread };
+    return threadToSession(data.thread);
+  } catch (error) {
+    console.warn("[sessions] create error:", error);
+    return session;
+  }
+}
+
+/** PATCH /api/sessions/:id —— 改 title。失败 swallow（前端 state 不回滚，下次刷新自然修正）。 */
+export async function updateSessionTitleOnApi(
+  id: string,
+  title: string,
+): Promise<void> {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+  } catch (error) {
+    console.warn("[sessions] patch title error:", error);
+  }
+}
+
+/** DELETE /api/sessions/:id —— 永久删除（messages + jsonl + 元数据）。 */
+export async function deleteSessionOnApi(id: string): Promise<void> {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  } catch (error) {
+    console.warn("[sessions] delete error:", error);
+  }
 }

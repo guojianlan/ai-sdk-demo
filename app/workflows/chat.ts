@@ -320,7 +320,7 @@ async function sendFinishChunk(finishReason: FinishReason): Promise<void> {
 
 async function clearActiveStream(chatId: string, workflowRunId: string) {
   "use step";
-  const { compareAndSetActiveStreamId } = await import("@/lib/chat-store");
+  const { compareAndSetActiveStreamId } = await import("@/lib/persistence");
   compareAndSetActiveStreamId(chatId, workflowRunId, null);
 }
 
@@ -335,8 +335,8 @@ async function persistAssistantSnapshot(
   messages: UIMessage[],
 ): Promise<void> {
   "use step";
-  const { saveMessages } = await import("@/lib/chat-store");
-  saveMessages(chatId, messages);
+  const { saveMessages } = await import("@/lib/persistence");
+  await saveMessages(chatId, messages);
 }
 
 async function closeWorkflowStream() {
