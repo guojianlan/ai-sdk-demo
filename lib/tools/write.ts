@@ -69,6 +69,99 @@ function countLines(text: string) {
   return text.split("\n").length;
 }
 
+function splitDiffLines(text: string): string[] {
+  return text.length === 0 ? [] : text.split("\n");
+}
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function truncateDiff(diff: string, maxLines = 240): string {
+  const lines = diff.split("\n");
+  if (lines.length <= maxLines) {
+    return diff;
+  }
+  return [
+    ...lines.slice(0, maxLines),
+    `... diff truncated (${lines.length - maxLines} more lines)`,
+  ].join("\n");
+}
+
+function buildContentDiff(filePath: string, before: string, after: string) {
+  if (before === after) {
+    return "";
+  }
+
+  const beforeLines = splitDiffLines(before);
+  const afterLines = splitDiffLines(after);
+  let prefix = 0;
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix++;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] ===
+      afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const contextBefore = Math.min(prefix, 3);
+  const oldStart = prefix - contextBefore;
+  const newStart = prefix - contextBefore;
+  const oldEnd = beforeLines.length - suffix;
+  const newEnd = afterLines.length - suffix;
+  const contextAfter = Math.min(suffix, 3);
+
+  const oldRangeCount = oldEnd - oldStart + contextAfter;
+  const newRangeCount = newEnd - newStart + contextAfter;
+  const lines = [
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    `@@ -${oldStart + 1},${Math.max(oldRangeCount, 0)} +${newStart + 1},${Math.max(newRangeCount, 0)} @@`,
+  ];
+
+  for (const line of beforeLines.slice(oldStart, prefix)) {
+    lines.push(` ${line}`);
+  }
+  for (const line of beforeLines.slice(prefix, oldEnd)) {
+    lines.push(`-${line}`);
+  }
+  for (const line of afterLines.slice(prefix, newEnd)) {
+    lines.push(`+${line}`);
+  }
+  for (const line of beforeLines.slice(oldEnd, oldEnd + contextAfter)) {
+    lines.push(` ${line}`);
+  }
+
+  return truncateDiff(lines.join("\n"));
+}
+
+async function getGitDiffForPath(
+  sandbox: Sandbox,
+  relativePath: string,
+): Promise<string | null> {
+  const result = await sandbox.exec(
+    `git diff --no-ext-diff --no-color -- ${shellQuote(relativePath)}`,
+    sandbox.workingDirectory,
+    10_000,
+  );
+
+  if (result.exitCode !== 0 || result.stdout.trim() === "") {
+    return null;
+  }
+
+  return truncateDiff(result.stdout.trimEnd());
+}
+
 async function readFileIfExists(sandbox: Sandbox, absolutePath: string) {
   try {
     return await sandbox.readFile(absolutePath, "utf-8");
@@ -116,15 +209,25 @@ export const writeTool = approvedTool({
 
       await sandbox.mkdir(path.dirname(absolutePath), { recursive: true });
       await sandbox.writeFile(absolutePath, content, "utf-8");
+      const relativeOutputPath =
+        path.relative(workspaceRoot, absolutePath) || relativePath;
+      const gitDiff = await getGitDiffForPath(sandbox, relativeOutputPath);
+      const contentDiff = buildContentDiff(
+        relativeOutputPath,
+        previous ?? "",
+        content,
+      );
 
       return toolOk({
-        path: path.relative(workspaceRoot, absolutePath) || relativePath,
+        path: relativeOutputPath,
         operation: (previous === null ? "created" : "overwritten") as
           | "created"
           | "overwritten",
         bytesWritten: Buffer.byteLength(content, "utf8"),
         lines: countLines(content),
         previousLines: previous === null ? 0 : countLines(previous),
+        diff: gitDiff ?? contentDiff,
+        diffSource: gitDiff ? "git" : "content",
       });
     } catch (error) {
       return toolErr(error);
@@ -195,17 +298,27 @@ export const editTool = approvedTool({
         : previous.replace(oldString, newString);
 
       await sandbox.writeFile(absolutePath, nextContent, "utf-8");
+      const relativeOutputPath =
+        path.relative(workspaceRoot, absolutePath) || relativePath;
+      const gitDiff = await getGitDiffForPath(sandbox, relativeOutputPath);
+      const contentDiff = buildContentDiff(
+        relativeOutputPath,
+        previous,
+        nextContent,
+      );
 
       const matchIndex = previous.indexOf(oldString);
       const startLine = previous.slice(0, matchIndex).split("\n").length;
 
       return toolOk({
-        path: path.relative(workspaceRoot, absolutePath) || relativePath,
+        path: relativeOutputPath,
         operation: "edited" as const,
         replacements: replaceAll ? occurrences : 1,
         startLine,
         removedLines: countLines(oldString),
         addedLines: countLines(newString),
+        diff: gitDiff ?? contentDiff,
+        diffSource: gitDiff ? "git" : "content",
       });
     } catch (error) {
       return toolErr(error);

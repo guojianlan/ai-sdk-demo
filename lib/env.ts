@@ -82,6 +82,8 @@ const workspaceBaseDir =
   pickString(process.env.WORKSPACE_BASE_DIR) ??
   path.resolve(process.cwd(), "..");
 
+const ripgrepPath = pickString(process.env.RIPGREP_PATH);
+
 const shellName =
   pickString(process.env.SHELL)?.split("/").pop() ??
   (os.platform() === "win32" ? "cmd" : "sh");
@@ -176,6 +178,8 @@ export const env = {
    */
   aiSdkLoggingExplicit: parseBoolean(process.env.AI_SDK_LOGGING),
   workspaceBaseDir,
+  /** Optional explicit rg binary. If unset, workspaces.ts tries bundled rg then system rg. */
+  ripgrepPath,
   shellName,
   /** 主聊天路由用的 OpenAI-compatible gateway 配置。 */
   gateway: {

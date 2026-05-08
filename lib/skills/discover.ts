@@ -15,8 +15,8 @@ import {
  * 设计选择：
  * - 不引入 gray-matter / js-yaml 依赖。frontmatter 只用 key:value 简单格式，
  *   照搬 open-agents 那个 50 行 mini parser 就够了。
- * - 不依赖 sandbox 抽象（C 路 Phase 5 才接入）。先用 fs/promises 直接走盘，
- *   将来 C 路完成后再 swap。
+ * - skill 定义来自当前应用仓库的 `.agents/skills`，不是用户选择的 workspace，
+ *   所以 discovery 直接用 fs/promises 读本仓文件，不走 workspace sandbox。
  * - 单层扫描：只看 `<root>/<skill-name>/SKILL.md`，不递归。避免误读子目录里
  *   的 `references/foo.md`。
  *

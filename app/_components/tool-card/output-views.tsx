@@ -133,6 +133,57 @@ function ToolErrorView({ message }: { message: string }) {
   );
 }
 
+function DiffPreviewPanel({
+  diff,
+  source,
+}: {
+  diff?: string;
+  source?: string;
+}) {
+  const lines = typeof diff === "string" && diff.trim() ? diff.split("\n") : [];
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="border-t border-slate-200">
+      <div className="flex items-center gap-2 bg-slate-950 px-3 py-2">
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-200">
+          git diff
+        </span>
+        {source && (
+          <span className="rounded-sm border border-slate-700 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
+            {source}
+          </span>
+        )}
+      </div>
+      <pre className="max-h-96 overflow-auto bg-slate-950 px-3 py-2 font-mono text-[12px] leading-6">
+        {lines.map((line, idx) => {
+          const color =
+            line.startsWith("+") && !line.startsWith("+++")
+              ? "text-emerald-300"
+              : line.startsWith("-") && !line.startsWith("---")
+                ? "text-rose-300"
+                : line.startsWith("@@")
+                  ? "text-sky-300"
+                  : line.startsWith("diff ") ||
+                      line.startsWith("index ") ||
+                      line.startsWith("---") ||
+                      line.startsWith("+++")
+                    ? "text-slate-400"
+                    : "text-slate-200";
+          return (
+            <span key={`${idx}-${line}`} className={`${color} block whitespace-pre`}>
+              {line || " "}
+            </span>
+          );
+        })}
+      </pre>
+    </div>
+  );
+}
+
 function ReadFileOutputView({
   output,
 }: {
@@ -281,22 +332,27 @@ function WriteResultView({
     bytesWritten?: number;
     lines?: number;
     previousLines?: number;
+    diff?: string;
+    diffSource?: string;
   };
 }) {
   const op = output.operation ?? "wrote";
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 py-2.5 font-mono text-[12px] text-slate-700">
-      <dt className="text-slate-500">path</dt>
-      <dd className="text-slate-900">{output.path ?? "?"}</dd>
-      <dt className="text-slate-500">op</dt>
-      <dd>{op}</dd>
-      <dt className="text-slate-500">lines</dt>
-      <dd>
-        {output.previousLines ?? 0} → {output.lines ?? 0}
-      </dd>
-      <dt className="text-slate-500">bytes</dt>
-      <dd>{formatBytes(output.bytesWritten)}</dd>
-    </dl>
+    <div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 py-2.5 font-mono text-[12px] text-slate-700">
+        <dt className="text-slate-500">path</dt>
+        <dd className="text-slate-900">{output.path ?? "?"}</dd>
+        <dt className="text-slate-500">op</dt>
+        <dd>{op}</dd>
+        <dt className="text-slate-500">lines</dt>
+        <dd>
+          {output.previousLines ?? 0} → {output.lines ?? 0}
+        </dd>
+        <dt className="text-slate-500">bytes</dt>
+        <dd>{formatBytes(output.bytesWritten)}</dd>
+      </dl>
+      <DiffPreviewPanel diff={output.diff} source={output.diffSource} />
+    </div>
   );
 }
 
@@ -309,24 +365,29 @@ function EditResultView({
     startLine?: number;
     addedLines?: number;
     removedLines?: number;
+    diff?: string;
+    diffSource?: string;
   };
 }) {
   const added = output.addedLines ?? 0;
   const removed = output.removedLines ?? 0;
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 py-2.5 font-mono text-[12px] text-slate-700">
-      <dt className="text-slate-500">path</dt>
-      <dd className="text-slate-900">{output.path ?? "?"}</dd>
-      <dt className="text-slate-500">at</dt>
-      <dd>line {output.startLine ?? "?"}</dd>
-      <dt className="text-slate-500">diff</dt>
-      <dd>
-        <span className="text-emerald-700">+{added}</span>{" "}
-        <span className="text-rose-700">−{removed}</span>
-      </dd>
-      <dt className="text-slate-500">×</dt>
-      <dd>{output.replacements ?? 1}</dd>
-    </dl>
+    <div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 py-2.5 font-mono text-[12px] text-slate-700">
+        <dt className="text-slate-500">path</dt>
+        <dd className="text-slate-900">{output.path ?? "?"}</dd>
+        <dt className="text-slate-500">at</dt>
+        <dd>line {output.startLine ?? "?"}</dd>
+        <dt className="text-slate-500">diff</dt>
+        <dd>
+          <span className="text-emerald-700">+{added}</span>{" "}
+          <span className="text-rose-700">−{removed}</span>
+        </dd>
+        <dt className="text-slate-500">×</dt>
+        <dd>{output.replacements ?? 1}</dd>
+      </dl>
+      <DiffPreviewPanel diff={output.diff} source={output.diffSource} />
+    </div>
   );
 }
 

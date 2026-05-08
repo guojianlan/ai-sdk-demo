@@ -179,8 +179,6 @@ export function isDotEnvFilePath(filePath: string): boolean {
  * 从工作区读取 UTF-8 文本文件，并通过字符上限控制返回体积，
  * 让工具结果保持在模型和流式 UI 都能承受的范围内。
  *
- * P5: 改走 sandbox.readFile。
- *
  * 二进制检测的妥协：sandbox.readFile 只返回 string（utf-8 解码后）。原本用
  * `buffer.subarray(0, 1024).includes(0)` 检 NUL 字节，现在只能检字符串里的
  * `\u0000`——utf-8 解码会把 0x00 字节保留为 U+0000 字符，所以对二进制文件
@@ -245,11 +243,11 @@ function escapeLiteral(query: string): string {
 /**
  * 纯 Node 的代码搜索兜底。
  *
- * 当 ripgrep 二进制找不到时（`spawn rg ENOENT`），就用这个实现。
+ * 当 ripgrep 二进制找不到时，就用这个实现。
  * 性能不如 rg，但胜在零外部依赖。
  *
- * P5: 改走 sandbox.readdir / sandbox.stat / sandbox.readFile。二进制检测同
- * `readWorkspaceFile`：靠字符串里的 `\u0000` 命中（utf-8 保留 NUL 字节）。
+ * 二进制检测同 `readWorkspaceFile`：靠字符串里的 `\u0000` 命中
+ * （utf-8 保留 NUL 字节）。
  *
  * 策略：
  * - 递归遍历 workingDirectory，跳过 IGNORED_DIRECTORY_NAMES 里的目录
@@ -352,6 +350,42 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+let cachedRipgrepCommand: string | null | undefined;
+
+async function fileIsExecutable(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRipgrepCommand(sandbox: Sandbox): Promise<string | null> {
+  if (cachedRipgrepCommand !== undefined) {
+    return cachedRipgrepCommand;
+  }
+
+  if (env.ripgrepPath) {
+    cachedRipgrepCommand = env.ripgrepPath;
+    return cachedRipgrepCommand;
+  }
+
+  if (await fileIsExecutable(rgPath)) {
+    cachedRipgrepCommand = rgPath;
+    return cachedRipgrepCommand;
+  }
+
+  const result = await sandbox.exec(
+    "command -v rg",
+    sandbox.workingDirectory,
+    5_000,
+  );
+  const systemRg = result.success ? result.stdout.trim().split("\n")[0] : "";
+  cachedRipgrepCommand = systemRg || null;
+  return cachedRipgrepCommand;
+}
+
 export type WorkspaceGlobMatch = {
   path: string;
   size: number;
@@ -428,9 +462,6 @@ export async function globWorkspace(
  * 代码搜索。
  * 优先用 ripgrep（中大型仓库上快得多），失败回落到纯 Node 实现（无外部依赖）。
  * sandbox.workingDirectory 固定作为 cwd / 遍历根，保证搜索范围始终限制在当前项目内。
- *
- * P5: 改走 sandbox.exec。command 字符串里的 query / glob 全部经 `shellQuote`，
- * 防止 model 把 shell metachar 注进搜索词。
  */
 const RIPGREP_TIMEOUT_MS = 30_000;
 
@@ -441,8 +472,14 @@ export async function searchWorkspace(
   glob?: string,
 ): Promise<WorkspaceSearchResult[]> {
   const workspaceRoot = sandbox.workingDirectory;
+  const ripgrepCommand = await resolveRipgrepCommand(sandbox);
+
+  if (!ripgrepCommand) {
+    return searchWorkspaceWithNode(sandbox, query, maxResults, glob);
+  }
+
   const argParts = [
-    shellQuote(rgPath),
+    shellQuote(ripgrepCommand),
     "--line-number",
     "--column",
     "--smart-case",
@@ -494,11 +531,7 @@ export async function searchWorkspace(
     return [];
   }
 
-  // 进程级错误：spawn 失败（rgPath 不存在 / postinstall 被防火墙挡）/ timeout / 其它。
-  // @vscode/ripgrep 在 npm install 时把二进制放进 node_modules/，按理走不到这里。
-  // 万一发生：兜底用 Node 实现，让搜索功能不至于整体挂掉。
-  console.warn(
-    `[searchWorkspace] ripgrep failed (exitCode=${result.exitCode}) — falling back to Node-based search. stderr: ${result.stderr.slice(0, 200)}`,
-  );
+  // 进程级错误：配置的 rg 不可执行 / timeout / 其它。只安静降级，避免每次搜索
+  // 都把 postinstall 下载失败这类本地环境问题刷到 dev server 日志里。
   return searchWorkspaceWithNode(sandbox, query, maxResults, glob);
 }

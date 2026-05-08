@@ -14,7 +14,7 @@
 | 2 | Subagent step 上限 | **100**（同 open-agents） | A 路 / Phase 1 |
 | 3 | Skills 接入 LLM 方式 | **open-agents hybrid 模式**：names+descriptions 进 system prompt + `skill` 工具按需拉 body | B 路 / Phase 3 |
 | 4 | Skills 一期迁移范围 | **A 档 + B 档共 9 个**（Phase 4 含 UI 类适配工作） | B 路 / Phase 3+4 |
-| 5 | Sandbox 改造范围 | **新建 sandbox 层 + 改造全部 5 个 workspace/write 工具** | C 路 / Phase 5 |
+| 5 | Sandbox 改造范围 | **已完成：本地 sandbox 层 + workspace/write/shell 工具接入** | C 路已落地 |
 
 > 概念校准：**Skill ≠ Tool**。Tool 是 model 调用的函数（有 schema/execute），Skill 是 markdown 指令文档（扩展 model 上下文、不执行代码）。两者独立维度共存。
 
@@ -25,15 +25,15 @@
 | 维度 | 我们 | open-agents | 差距 |
 |---|---|---|---|
 | Workflow 框架 | ✅ `workflow/api` + `getWritable` | ✅ 同 | 已对齐 |
-| 内层 `stopWhen` | `stepCountIs(16)` | `stepCountIs(1)` | **要改** |
-| 外层手写循环 | ❌ 只调一次 `runAgentStep` | ✅ `for` loop maxSteps=500 | **要加** |
-| `shouldPauseForToolInteraction` | ❌（只有 tool 级 `needsApproval`） | ✅ 在两步之间判断 | **要加** |
-| 按步落库 | ❌ 只在末尾 `saveMessages` | ✅ 每步 `persistAssistantMessage` | **要加** |
-| Subagent 上限 | 20（只有 explorer） | 100（design / executor / explorer 三个） | **要改：拉到 100** |
-| Skill 发现 | ❌ | ✅ `discoverSkills()` + `skills-cache` | **要加** |
+| 内层 `stopWhen` | ✅ `stepCountIs(1)` | ✅ `stepCountIs(1)` | 已对齐 |
+| 外层手写循环 | ✅ `for` loop maxSteps=500 | ✅ `for` loop maxSteps=500 | 已对齐 |
+| `shouldPauseForToolInteraction` | ✅ 在两步之间判断 | ✅ 在两步之间判断 | 已对齐 |
+| 按步落库 | ✅ 每步保存 assistant snapshot | ✅ 每步 `persistAssistantMessage` | 已对齐 |
+| Subagent 上限 | ✅ explorer 100 步 | 100（design / executor / explorer 三个） | 类型数量少于 open-agents |
+| Skill 发现 | ✅ `.agents/skills` discovery + cache | ✅ `discoverSkills()` + `skills-cache` | 已对齐 |
 | chat-post-finish | ❌ | ✅ auto-commit / PR / usage | **大部分不适用** |
-| 沙箱抽象 | ❌ 直接 Node fs | ✅ `Sandbox` interface（cloud only） | **可加：本地实现** |
-| Resume buffer | `lib/active-streams.ts` 进程内 Map（**死代码**） | 走 workflow durable stream | **删** |
+| 沙箱抽象 | ✅ `Sandbox` interface + `LocalSandbox` | ✅ `Sandbox` interface（cloud only） | 本地实现已落地，cloud adapter 待后续 |
+| Resume buffer | ✅ workflow durable stream | 走 workflow durable stream | 已对齐 |
 
 > **架构定论**：应用数据（messages / summaries / runtime 指针）与 workflow durable state 是两层，应保持分离。耦合面只有 `chat_runtime_state.active_stream_id` 一个 string 指针。详见 §7。
 
@@ -165,21 +165,21 @@
 3. **`stepLimit` 字段**：删字段更干净；保留作为 AI SDK 内层硬上限的 defense in depth 也合理。建议**删**（cleanup bias）。
 4. ~~Skills 接入方式~~ → 已定 **open-agents hybrid**
 5. **`onWorkflowFinish` hook**：暂不引入（YAGNI），需要 auto-commit 之类的功能时再加。
-6. **Ship 节奏**：A 路 = Phase 0+1+2 一个 PR；B 路 = Phase 3 一个 PR，Phase 4 一个 PR；C 路 = Phase 5 一个 PR。3 路并行（A 路先 merge，B/C 同时跑）。
+6. **Ship 节奏**：A 路、B 路、C 路已经按独立批次落地；后续工作从 cloud sandbox / GitHub PR 闭环继续拆。
 
 ---
 
 ## 5. 后续讨论中的两个开放话题
 
-### 5.1 本地 sandbox 实现
+### 5.1 本地 sandbox 实现（已完成）
 
 open-agents 的 [packages/sandbox/interface.ts](../tmp/open-agents-main/packages/sandbox/interface.ts) 已经定义了完整的 `Sandbox` interface（`readFile`/`writeFile`/`stat`/`readdir`/`exec`/`mkdir`/`access` + lifecycle hooks）。当前唯一实现是 `vercel/`。
 
-**评估**：
-- 实现成本低：纯 Node `fs/promises` + `child_process.spawn` 即可
-- 收益：(a) 现有 workspace tools 可以基于统一接口，将来切 cloud sandbox 零改动；(b) 测试时 mock 一个 sandbox 就行
-- 风险：现有 [lib/workspaces.ts](../lib/workspaces.ts) 已经做了路径校验、ripgrep 调用，要小心**不要破坏 `..` escape 防御**
-- 建议：作为 **Phase 5（独立 PR）**，先不阻塞 loop / skill 改造
+**当前状态**：
+- `lib/sandbox/` 已提供 `Sandbox` interface、`LocalSandbox`、factory 和 context helper。
+- `read` / `glob` / `grep` / `write` / `edit` / `shell` 均通过 sandbox context 访问工作区。
+- 路径边界仍复用 [lib/workspaces.ts](../lib/workspaces.ts) 的 `resolveWorkspacePath`，避免 `..` escape。
+- 后续只剩 cloud sandbox adapter（Vercel / Daytona / E2B 等）需要新增实现。
 
 详见 §6。
 
@@ -193,35 +193,36 @@ open-agents 的 [packages/sandbox/interface.ts](../tmp/open-agents-main/packages
 
 ---
 
-## 6. Phase 5 — 本地 Sandbox 实现 + 全量工具改造
+## 6. 本地 Sandbox 实现 + 全量工具改造（已完成）
 
-> 不阻塞 Phase 1-4，独立 PR 排期。**改造范围 = 5 个工具全切**：list_files / search_code / read_file / write_file / edit_file。
+本节保留为实现回顾。当前代码已经完成本地 sandbox 抽象，并把 workspace/write/shell 工具接入该抽象。
 
 #### 6.1 sandbox 层
 
-1. 新建 `lib/sandbox/` 目录
-2. 拷贝 `packages/sandbox/interface.ts` → `lib/sandbox/interface.ts`，把 `SandboxType = "cloud"` 改为 `"cloud" | "local"`
-3. 新建 `lib/sandbox/local/index.ts` 实现 `LocalSandbox`：
+1. `lib/sandbox/` 目录已存在
+2. `lib/sandbox/interface.ts` 已提供 `"cloud" | "local"` 的 `SandboxType`
+3. `lib/sandbox/local/index.ts` 已实现 `LocalSandbox`：
    - `workingDirectory`：从 `WORKSPACE_BASE_DIR` 推导
    - `readFile / writeFile / stat / readdir / mkdir / access`：直接 `fs/promises`，**内部复用 [lib/workspaces.ts](../lib/workspaces.ts) 的 `..` escape 校验**
    - `exec`：`child_process.spawn` + AbortSignal + truncate stdout/stderr（用于 ripgrep）
    - `getState`：`{ type: "local", workingDirectory }`
    - 不实现 `snapshot` / `extendTimeout`（cloud-only 概念）
-4. 新建 `lib/sandbox/factory.ts`：`connectSandbox(state)` 按 `type` dispatch
+4. `lib/sandbox/factory.ts` 已提供 `connectSandbox(state)` 按 `type` dispatch
 
 #### 6.2 工具改造（5 个）
 
 | 工具 | 文件 | 改造内容 |
 |---|---|---|
-| `list_files` | [lib/workspace-tools.ts](../lib/workspace-tools.ts) | 改用 `sandbox.readdir` |
-| `search_code` | [lib/workspace-tools.ts](../lib/workspace-tools.ts) | 改用 `sandbox.exec("rg ...")` |
-| `read_file` | [lib/workspace-tools.ts](../lib/workspace-tools.ts) | 改用 `sandbox.readFile` |
-| `write_file` | [lib/write-tools.ts](../lib/write-tools.ts) | 改用 `sandbox.writeFile`，**保留 approval 流** |
-| `edit_file` | [lib/write-tools.ts](../lib/write-tools.ts) | 改用 `sandbox.readFile + writeFile`，**保留 approval 流** |
+| `glob` | [lib/tools/glob.ts](../lib/tools/glob.ts) | 已走 `sandbox.readdir` / `sandbox.stat` |
+| `grep` | [lib/tools/grep.ts](../lib/tools/grep.ts) | 已走 `sandbox.exec("rg ...")`，并有 Node fallback |
+| `read` | [lib/tools/read.ts](../lib/tools/read.ts) | 已走 `sandbox.readFile` |
+| `write` | [lib/tools/write.ts](../lib/tools/write.ts) | 已走 `sandbox.writeFile`，保留 `.env*` approval 策略 |
+| `edit` | [lib/tools/write.ts](../lib/tools/write.ts) | 已走 `sandbox.readFile + writeFile`，保留 `.env*` approval 策略 |
+| `shell` | [lib/tools/shell.ts](../lib/tools/shell.ts) | 已走 `sandbox.exec`，按会话 shell approval 策略控制 |
 
 #### 6.3 sandbox 注入
 
-通过 `experimental_context.sandbox` 把当前 sandbox 实例传给所有工具，工具内部 `getSandbox(ctx)` 拿。
+通过 `experimental_context.sandbox` 把当前 sandbox 实例传给所有工具，工具内部统一从 `getWorkspaceToolContext()` / `getSandbox()` 读取。
 
 #### 6.4 验证（关键）
 

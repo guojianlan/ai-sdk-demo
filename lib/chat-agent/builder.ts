@@ -120,9 +120,9 @@ export function createChatAgent<
         workspaceName,
       });
 
-      // P5: 每个 prepareCall 现场 connect 一个 LocalSandbox。LocalSandbox 是
-      // 纯 fs wrapper，开销可忽略；不复用是为了避免跨请求/跨 step 持有 class
-      // 实例（更适合将来的 cloud sandbox：那些实例可能持有远端 session）。
+      // 每个 prepareCall 现场 connect 一个 LocalSandbox。LocalSandbox 是纯 fs
+      // wrapper，开销可忽略；不复用是为了避免跨请求/跨 step 持有 class 实例
+      // （更适合将来的 cloud sandbox：那些实例可能持有远端 session）。
       const sandbox = await connectSandbox({
         type: "local",
         workingDirectory: workspaceRoot,

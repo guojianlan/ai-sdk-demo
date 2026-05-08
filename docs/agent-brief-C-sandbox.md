@@ -1,17 +1,14 @@
-# Agent Brief — C 路：本地 Sandbox + 全量工具改造
+# Sandbox 迁移回顾
 
-> **范围**：Phase 5（sandbox 层 + 5 个 workspace/write 工具改造）
-> **预计时间**：1-1.5 天
-> **PR 数**：1 个（建议拆 2 commit：sandbox 层一个、工具改造一个）
-> **前置依赖**：A 路 PR 已 merge
+> **状态**：已完成。本文件保留为实现回顾和后续 cloud sandbox adapter 的参考。
 
 ---
 
 ## 1. 背景
 
-参考主文档 [docs/open-agents-alignment-plan.md](./open-agents-alignment-plan.md) §0、§6 Phase 5。
+参考主文档 [docs/open-agents-alignment-plan.md](./open-agents-alignment-plan.md) §0、§6。
 
-**目标**：把 open-agents 的 `Sandbox` interface 抄过来 + 实现一个 `LocalSandbox`，然后把现有 5 个工具（`list_files` / `search_code` / `read_file` / `write_file` / `edit_file`）全部改走 sandbox interface 而不是直接 fs。
+**结果**：本项目已经引入 open-agents 风格的 `Sandbox` interface，实现 `LocalSandbox`，并让 workspace/write/shell 工具通过 sandbox interface 访问本机工作区。
 
 **收益**：
 1. 工具与底层 IO 解耦，将来要切 Vercel cloud sandbox / 远程沙箱零代码改动
@@ -29,14 +26,15 @@
 
 | 文件 | 修改内容 |
 |---|---|
-| `lib/sandbox/interface.ts` | **新建**：从 open-agents 拷贝，`SandboxType = "cloud" \| "local"` |
-| `lib/sandbox/types.ts` | **新建**：`SandboxState` discriminated union |
-| `lib/sandbox/local/index.ts` | **新建**：`LocalSandbox` 实现 |
-| `lib/sandbox/local/connect.ts` | **新建**：`connectLocal(state, options)` 工厂函数 |
-| `lib/sandbox/factory.ts` | **新建**：`connectSandbox(config)` 按 type dispatch |
-| `lib/sandbox/index.ts` | **新建**：barrel export |
-| `lib/workspace-tools.ts` | 改造：`list_files` / `search_code` / `read_file` 走 sandbox |
-| `lib/write-tools.ts` | 改造：`write_file` / `edit_file` 走 sandbox，**保留 approval 流** |
+| `lib/sandbox/interface.ts` | 已新增：对齐 open-agents，`SandboxType = "cloud" \| "local"` |
+| `lib/sandbox/types.ts` | 已新增：`SandboxState` discriminated union |
+| `lib/sandbox/local/index.ts` | 已新增：`LocalSandbox` 实现 |
+| `lib/sandbox/local/connect.ts` | 已新增：`connectLocal(state, options)` 工厂函数 |
+| `lib/sandbox/factory.ts` | 已新增：`connectSandbox(config)` 按 type dispatch |
+| `lib/sandbox/index.ts` | 已新增：barrel export |
+| `lib/tools/{read,grep,glob}.ts` | 已改造：read / grep / glob 走 sandbox |
+| `lib/tools/write.ts` | 已改造：write / edit 走 sandbox，保留 `.env*` approval 策略 |
+| `lib/tools/shell.ts` | 已改造：shell 走 sandbox.exec，保留 shell approval 策略 |
 | `lib/workspaces.ts` | **保留**路径校验函数，作为 `LocalSandbox` 内部 guard 复用 |
 | `app/api/chat/agent-config.ts` | 创建 sandbox 实例并通过 `experimental_context.sandbox` 注入 |
 | `app/workflows/chat.ts` | 把 sandbox 实例从 workflow options 传给 agent |
@@ -336,7 +334,7 @@ await sandbox.stop();
 ```markdown
 ## 改动
 
-按 [docs/open-agents-alignment-plan.md](docs/open-agents-alignment-plan.md) Phase 5 执行：
+按 [docs/open-agents-alignment-plan.md](docs/open-agents-alignment-plan.md) 的 sandbox 迁移计划执行：
 
 ### Commit 1: sandbox 抽象层
 - 新增 `lib/sandbox/` 模块，`Sandbox` interface 对齐 open-agents
@@ -344,7 +342,7 @@ await sandbox.stop();
 - 复用现有 `lib/workspaces.ts` 的 `..` escape 校验作为 guard
 
 ### Commit 2: 5 个工具迁移
-- `list_files` / `search_code` / `read_file` / `write_file` / `edit_file` 全部改走 sandbox interface
+- workspace/write 工具全部接入 sandbox interface
 - approval 流（`needsApproval` / `bypassPermissions`）保持不变
 - chat route + workflow 串通 sandbox 注入链路
 
