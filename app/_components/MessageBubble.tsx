@@ -1,9 +1,14 @@
+import { Fragment } from "react";
+
 import type { UIMessage } from "ai";
 
 import { extractMessageText } from "@/app/_lib/chat-session";
 import { parseCompactionNotice } from "@/lib/compaction";
 
 import { AssistantMarkdown } from "./AssistantMarkdown";
+import { splitOnBlocks } from "./assistant-blocks";
+import { ImplementationSummaryCard } from "./ImplementationSummaryCard";
+import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ToolPartCard } from "./tool-card/ToolPartCard";
 import {
   isToolPart,
@@ -78,10 +83,16 @@ export function MessageBubble({
   message,
   onApproval,
   onToolOutput,
+  onAdoptPlan,
+  onCreateCommit,
 }: {
   message: UIMessage;
   onApproval: ApprovalHandler;
   onToolOutput: OnToolOutputHandler;
+  /** 用户点 ProposedPlanCard "采用此方案"时回调（父组件实际负责切 plan + sendMessage）。 */
+  onAdoptPlan: (planContent: string) => void;
+  /** 用户点 ImplementationSummaryCard "创建 commit"时回调。 */
+  onCreateCommit: (summaryContent: string) => void;
 }) {
   // system role 消息（目前只有 compaction 通知）走单独一行的系统通知样式，
   // 不是气泡。提前 return，避免下面的 user/assistant 气泡逻辑介入。
@@ -132,7 +143,38 @@ export function MessageBubble({
                   </div>
                 );
               }
-              return <AssistantMarkdown key={`text-${index}`} text={text} />;
+              // assistant text part 里如果含 `<proposed_plan>` / `<implementation_summary>`
+              // 块，拆成 [text-before, card, text-after, ...] 渲染。块外文字走 markdown，
+              // 块内由对应的 Card 自己渲染 + 加操作按钮。详见 ./assistant-blocks.ts。
+              const segments = splitOnBlocks(text);
+              return (
+                <Fragment key={`text-${index}`}>
+                  {segments.map((seg, segIdx) => {
+                    const segKey = `text-${index}-seg-${segIdx}`;
+                    if (seg.kind === "proposed_plan") {
+                      return (
+                        <ProposedPlanCard
+                          key={segKey}
+                          content={seg.content}
+                          onAdopt={onAdoptPlan}
+                        />
+                      );
+                    }
+                    if (seg.kind === "implementation_summary") {
+                      return (
+                        <ImplementationSummaryCard
+                          key={segKey}
+                          content={seg.content}
+                          onCreateCommit={onCreateCommit}
+                        />
+                      );
+                    }
+                    return (
+                      <AssistantMarkdown key={segKey} text={seg.content} />
+                    );
+                  })}
+                </Fragment>
+              );
             }
 
             if (isToolPart(part)) {

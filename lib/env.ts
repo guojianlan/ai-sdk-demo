@@ -116,6 +116,42 @@ const compactionKeepRecentMessages = parseIntOr(
 const outerStepLimit = parseIntOr(process.env.CHAT_OUTER_STEP_LIMIT, 500);
 
 /**
+ * Memory 抽取器（A2 Phase 1）专用模型。
+ *
+ * 不配（`undefined`）→ 用主对话同一个 model（`gateway.modelId`）。
+ * 配了便宜模型（`MEMORY_EXTRACTOR_MODEL=deepseek-v4-flash` 或 `gpt-5-mini`）→
+ * Phase 1 跑那个，省 token；主对话不受影响。
+ *
+ * 对齐 codex：他们 Phase 1 用 `gpt-5-mini` LOW reasoning，Phase 2 用 `gpt-5`
+ * MEDIUM reasoning。我们暂时不分两档（Phase 2 用同一个 env），将来不够再加。
+ */
+const memoryExtractorModel = pickString(process.env.MEMORY_EXTRACTOR_MODEL);
+
+/**
+ * 跨对话长期记忆（`~/.local-agent/memory/MEMORY.md`）注入 system prompt 的字符上限。
+ *
+ * 默认 8000 字符（≈ 2000 token），超出截断只取头部 + 末尾加警告。原因：
+ * - prompt 的预算紧；MEMORY.md 通常是 consolidator 整合后的索引（每条 ≤ 150 字符），
+ *   8000 能容 ~50 条索引项，对个人用户够用
+ * - 大用户 / 团队 memory 可以调高 `AGENT_MEMORY_MAX_CHARS=20000`
+ * - 真要塞更多请走"按需拉"模式（A4 `memory_write` tool 之外再加 `memory_read`）
+ */
+const memoryMaxChars = parseIntOr(process.env.AGENT_MEMORY_MAX_CHARS, 8000);
+
+/**
+ * `spawn_agent` 递归调用的深度上限。
+ *
+ * 0 = 主 agent；1 = 子 agent（主 agent spawn 出来）；2 = 孙 agent；以此类推。
+ *
+ * 默认 2 —— 主 agent 可以 spawn 子 agent，子 agent 还能再 spawn 一次孙 agent，
+ * 再深就拒绝。这个上限是 token / 失控防御：每多一层都让单个 chat turn 翻倍消耗。
+ *
+ * codex 用 `agent_max_depth` 配置同样的事；他们默认更宽松（用户可调），我们
+ * 收紧默认值。想加大设 `SUBAGENT_MAX_DEPTH=3` 或更高。
+ */
+const subAgentMaxDepth = parseIntOr(process.env.SUBAGENT_MAX_DEPTH, 2);
+
+/**
  * 持久化存储根目录。
  *
  * 设计：默认 `~/.local-agent/`——刻意起一个 **跟当前项目名解耦** 的中性名，
@@ -192,6 +228,12 @@ export const env = {
   },
   /** 主聊天 workflow 外层 for 循环的步数上限（对齐 open-agents 的 maxSteps=500）。 */
   outerStepLimit,
+  /** spawn_agent 递归深度上限。默认 2（主 → 子 → 孙）。 */
+  subAgentMaxDepth,
+  /** MEMORY.md 注入 system prompt 的字符上限。默认 8000。 */
+  memoryMaxChars,
+  /** Memory 抽取器专用模型。undefined → 落回主模型。 */
+  memoryExtractorModel,
   /** read / write / edit 命中 `.env*` 路径时是否弹审批。默认 false。 */
   dotEnvFileApproval,
   /** ASRT OS 沙箱配置（默认关）。 */

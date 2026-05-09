@@ -5,7 +5,14 @@ import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
-// 走单文件 import：barrel 会拉到 node:fs（task.ts → explorer.ts → devtools），
+// 走单文件 import：barrel 会拉到 node:fs（permissions/settings.ts），
+// chat-session 同时被 client 引用，barrel 会拉死编译。
+import {
+  DEFAULT_PERMISSION_MODE,
+  normalizePermissionMode,
+  type PermissionMode,
+} from "@/lib/permissions/mode";
+// 走单文件 import：barrel 会拉到 node:fs（spawn-agent.ts → sub-agent.ts → devtools），
 // chat-session 同时被 client 引用，编译会挂。
 import {
   DEFAULT_SHELL_APPROVAL_POLICY,
@@ -49,6 +56,25 @@ export type ChatSession = {
    * 写文件 (`write` / `edit`) 不再走审批——open-agents 风格，靠 git diff 事后 review。
    */
   shellApprovalPolicy: ShellApprovalPolicy;
+  /**
+   * 会话级 PermissionMode（claude-code 风格的三档）：
+   * - `default`           —— 现有行为（每个工具按自己 needsApproval 决定）
+   * - `acceptEdits`       —— write/edit 自动过审批，shell 仍按原逻辑
+   * - `bypassPermissions` —— 全部自动过；**受 settings.json 双闸控制**
+   *
+   * ACL 规则永远优先于 mode：mode = bypass 也无法压住 ACL deny。
+   */
+  permissionMode: PermissionMode;
+  /**
+   * Plan 模式（codex collaboration mode 的移植）。开启后：
+   * - system prompt 注入 plan.md 的 128 行规则
+   * - toolset 过滤掉 `update_plan` / `write` / `edit`
+   * - shell 仍可用，但 prompt 严格要求 non-mutating 命令
+   *
+   * 跟 PermissionMode 是两个**正交**维度——可以同时开 plan mode + acceptEdits
+   * （虽然没意义，反正写工具被过滤了）。
+   */
+  planMode: boolean;
 };
 
 export const STORAGE_KEY = "ai-sdk-demo.chat-sessions";
@@ -71,6 +97,8 @@ export function createSession(
   workspace?: Partial<WorkspaceOption>,
   workspaceAccessMode: WorkspaceAccessMode = DEFAULT_WORKSPACE_ACCESS_MODE,
   shellApprovalPolicy: ShellApprovalPolicy = DEFAULT_SHELL_APPROVAL_POLICY,
+  permissionMode: PermissionMode = DEFAULT_PERMISSION_MODE,
+  planMode: boolean = false,
 ): ChatSession {
   const now = new Date().toISOString();
 
@@ -84,6 +112,8 @@ export function createSession(
     workspaceName: workspace?.name ?? "",
     workspaceAccessMode,
     shellApprovalPolicy,
+    permissionMode,
+    planMode,
   };
 }
 
@@ -144,6 +174,8 @@ type ApiThread = {
   workspaceName: string | null;
   workspaceAccessMode: string | null;
   shellApprovalPolicy: string | null;
+  permissionMode: string | null;
+  planMode: boolean;
   title: string | null;
   messageCount: number;
   createdAt: number;
@@ -162,6 +194,8 @@ function threadToSession(thread: ApiThread): ChatSession {
     workspaceName: thread.workspaceName ?? "",
     workspaceAccessMode: normalizeWorkspaceAccessMode(thread.workspaceAccessMode),
     shellApprovalPolicy: normalizeShellApprovalPolicy(thread.shellApprovalPolicy),
+    permissionMode: normalizePermissionMode(thread.permissionMode),
+    planMode: thread.planMode === true,
   };
 }
 
@@ -196,6 +230,8 @@ export async function createSessionOnApi(session: ChatSession): Promise<ChatSess
         workspaceName: session.workspaceName,
         workspaceAccessMode: session.workspaceAccessMode,
         shellApprovalPolicy: session.shellApprovalPolicy,
+        permissionMode: session.permissionMode,
+        planMode: session.planMode,
         title: session.title,
       }),
     });
@@ -224,6 +260,38 @@ export async function updateSessionTitleOnApi(
     });
   } catch (error) {
     console.warn("[sessions] patch title error:", error);
+  }
+}
+
+/** PATCH /api/sessions/:id —— 改 permissionMode。失败 swallow，跟 title 同样策略。 */
+export async function updateSessionPermissionModeOnApi(
+  id: string,
+  permissionMode: PermissionMode,
+): Promise<void> {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ permissionMode }),
+    });
+  } catch (error) {
+    console.warn("[sessions] patch permissionMode error:", error);
+  }
+}
+
+/** PATCH /api/sessions/:id —— 切 plan mode 开关。失败 swallow。 */
+export async function updateSessionPlanModeOnApi(
+  id: string,
+  planMode: boolean,
+): Promise<void> {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ planMode }),
+    });
+  } catch (error) {
+    console.warn("[sessions] patch planMode error:", error);
   }
 }
 

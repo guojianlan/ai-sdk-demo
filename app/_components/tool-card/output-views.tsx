@@ -106,12 +106,26 @@ export function summarizeToolOutput(toolName: string, output: unknown): string {
     return `${p} · +${added} −${removed}${reps}`;
   }
 
-  if (toolName === "task") {
+  if (toolName === "spawn_agent" || toolName === "task") {
     const steps = typeof o.stepsUsed === "number" ? `${o.stepsUsed} steps` : "";
+    // toolBreakdown：把次数加起来当 tool calls 总数显示
+    const breakdown =
+      o.toolBreakdown && typeof o.toolBreakdown === "object"
+        ? Object.values(o.toolBreakdown as Record<string, number>).reduce(
+            (a, b) => a + b,
+            0,
+          )
+        : null;
+    const calls =
+      typeof breakdown === "number" && breakdown > 0
+        ? `${breakdown} tool calls`
+        : "";
     const files = Array.isArray(o.filesExamined)
       ? `${o.filesExamined.length} files`
       : "";
-    return [steps, files].filter(Boolean).join(" · ");
+    const depth =
+      typeof o.depth === "number" && o.depth > 1 ? `depth ${o.depth}` : "";
+    return [steps, calls, files, depth].filter(Boolean).join(" · ");
   }
 
   if (toolName === "shell") {
@@ -330,30 +344,72 @@ function EditResultView({
   );
 }
 
-function ExploreWorkspaceOutputView({
+/**
+ * 子 agent (`spawn_agent` / 老的 `task`) 输出渲染。
+ * - `summary`: 子 agent 给父 agent 看的中文简报，必有
+ * - `stepsUsed`: 工具调用步数
+ * - `toolBreakdown`: **新 `spawn_agent` 字段** —— `{ read: 5, grep: 3, write: 2 }`
+ *   形态，UI 渲染成工具用量 chip 列表，让用户看到子 agent 实际跑了什么
+ * - `depth`: **新字段** —— 当前子 agent 的嵌套深度。> 1 时显示"depth N"标签
+ * - `filesExamined`: **仅老 `task` 工具有这个字段**；新 `spawn_agent` 没有
+ */
+function SubAgentOutputView({
   output,
 }: {
   output: {
     summary?: string;
     filesExamined?: string[];
     stepsUsed?: number;
+    toolBreakdown?: Record<string, number>;
+    depth?: number;
   };
 }) {
   const files = Array.isArray(output.filesExamined) ? output.filesExamined : [];
+  const hasFiles = files.length > 0;
+
+  // toolBreakdown 排序：用量降序，让最常用的工具排前
+  const breakdown =
+    output.toolBreakdown && typeof output.toolBreakdown === "object"
+      ? Object.entries(output.toolBreakdown).sort(([, a], [, b]) => b - a)
+      : [];
+  const hasBreakdown = breakdown.length > 0;
 
   return (
     <div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-600">
-        <span className="font-medium text-slate-800">explorer subagent</span>
+        <span className="font-medium text-slate-800">sub-agent</span>
         {typeof output.stepsUsed === "number" && (
           <span>· {output.stepsUsed} steps</span>
         )}
-        <span>· {files.length} files examined</span>
+        {typeof output.depth === "number" && output.depth > 1 && (
+          <span className="rounded-sm border border-violet-300 bg-violet-50 px-1.5 py-0.5 text-violet-700">
+            depth {output.depth}
+          </span>
+        )}
+        {hasFiles && <span>· {files.length} files examined</span>}
       </div>
+
+      {hasBreakdown && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-slate-50/60 px-3 py-2">
+          <span className="mr-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+            tool calls
+          </span>
+          {breakdown.map(([name, count]) => (
+            <span
+              key={name}
+              className="inline-flex items-center gap-1 rounded-sm border border-slate-300 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
+            >
+              <span className="font-medium">{name}</span>
+              <span className="tabular-nums text-slate-500">×{count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="border-b border-slate-200 px-3 py-3 text-[13px] leading-7 text-slate-800 whitespace-pre-wrap">
         {output.summary || "(no summary returned)"}
       </div>
-      {files.length > 0 && (
+      {hasFiles && (
         <details className="group">
           <summary className="flex cursor-pointer list-none items-center gap-2 bg-slate-50/60 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
             <span>files examined</span>
@@ -465,8 +521,8 @@ function renderKnownOutput(
   if (toolName === "edit") {
     return <EditResultView output={data} />;
   }
-  if (toolName === "task") {
-    return <ExploreWorkspaceOutputView output={data} />;
+  if (toolName === "spawn_agent" || toolName === "task") {
+    return <SubAgentOutputView output={data} />;
   }
   return null;
 }

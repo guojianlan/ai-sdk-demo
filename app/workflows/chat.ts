@@ -12,6 +12,7 @@ import { getWorkflowMetadata, getWritable } from "workflow";
 import { getRun } from "workflow/api";
 
 import type { WorkspaceAccessMode } from "@/lib/chat-access-mode";
+import type { PermissionMode } from "@/lib/permissions";
 import type { SkillMetadata } from "@/lib/skills";
 import type { ShellApprovalPolicy } from "@/lib/tools/shell-approval";
 import {
@@ -37,6 +38,10 @@ export type ChatWorkflowOptions = {
   workspaceName?: string;
   workspaceAccessMode: WorkspaceAccessMode;
   shellApprovalPolicy: ShellApprovalPolicy | undefined;
+  /** 会话级权限模式。default / acceptEdits / bypassPermissions。 */
+  permissionMode: PermissionMode;
+  /** Plan 模式（codex collaboration mode）。开启后过滤 mutating tool 并注入 PLAN_MODE_PROMPT。 */
+  planMode: boolean;
   conversationSummary: string | null;
   /** 当前会话可用 skill 列表（POST handler 调 getSkills() 取得后传入）。 */
   skills: SkillMetadata[];
@@ -211,10 +216,38 @@ async function runAgentStep(
   // in workflow"）。
   const { interactiveToolset } = await import("@/lib/tools");
 
+  // Toolset 过滤：plan 模式 + 项目级 memoryEnabled 开关都在这一步生效。
+  // - plan 模式：过滤 update_plan / write / edit（agent 看不见就不会调，比 codex
+  //   handler runtime 报错更直接）。shell 不过滤（plan.md 自己约束）
+  // - memoryEnabled=false：过滤 memory_write
+  // 两个条件可叠加。settings 通过 dynamic import 取 —— chat.ts 在 workflow 插件
+  // 上下文里跑，barrel 静态 import 含 node:fs 的模块会被拒。
+  const { isMemoryEnabled, loadSettings } = await import("@/lib/permissions");
+  const settings = loadSettings(options.workspaceRoot);
+  const memoryEnabled = isMemoryEnabled(settings);
+
+  const baseTools: ToolSet = hasWorkspaceTools
+    ? { ...projectEngineerStaticToolset, ...mcpTools }
+    : { ...interactiveToolset };
+
+  const filterKeys = new Set<string>();
+  if (options.planMode) {
+    filterKeys.add("update_plan");
+    filterKeys.add("write");
+    filterKeys.add("edit");
+  }
+  if (!memoryEnabled) {
+    filterKeys.add("memory_write");
+  }
+  const tools: ToolSet =
+    filterKeys.size === 0
+      ? baseTools
+      : Object.fromEntries(
+          Object.entries(baseTools).filter(([key]) => !filterKeys.has(key)),
+        );
+
   const agent = createProjectEngineerAgent({
-    tools: hasWorkspaceTools
-      ? { ...projectEngineerStaticToolset, ...mcpTools }
-      : { ...interactiveToolset },
+    tools,
     conversationSummary: options.conversationSummary,
     skills: options.skills,
   });
@@ -231,6 +264,8 @@ async function runAgentStep(
         workspaceName: options.workspaceName,
         workspaceAccessMode: options.workspaceAccessMode,
         shellApprovalPolicy: options.shellApprovalPolicy ?? "untrusted",
+        permissionMode: options.permissionMode,
+        planMode: options.planMode,
       },
       abortSignal: abortController.signal,
       experimental_transform: smoothStream({
@@ -281,6 +316,22 @@ async function runAgentStep(
         responseModelMessages: [],
         finishReason: "stop",
         aborted: true,
+      };
+    }
+    if (isNoOutputError(error)) {
+      // 模型这一步产生 0 个 chunk —— 常见原因：reasoning-only 输出被我们
+      // `sendReasoning:false` 过滤掉，或本地 gateway 偶发空响应。AI SDK 的
+      // smoothStream 在 flush 时会抛 AI_NoOutputGeneratedError；不处理就把
+      // 整个 workflow 干挂。这里降级为"本步无内容、stop 收尾"，外层 loop
+      // 会自然 break，UI 看到 assistant 消息结束。
+      console.warn(
+        `[workflow/chat] step ${stepIndex} produced no output; treating as stop`,
+      );
+      return {
+        responseMessage,
+        responseModelMessages: [],
+        finishReason: "stop",
+        aborted: false,
       };
     }
     throw error;
@@ -385,5 +436,23 @@ function isAbortError(error: unknown): boolean {
     (error.name === "AbortError" ||
       (typeof error.message === "string" &&
         error.message.toLowerCase().includes("abort")))
+  );
+}
+
+/**
+ * AI SDK `AI_NoOutputGeneratedError` —— 当 step 产生 0 个 visible chunk 时
+ * smoothStream flush 阶段会抛。常见原因：
+ *  - 模型只输出 reasoning（被 sendReasoning:false 过滤掉）
+ *  - 本地 gateway 偶发空响应
+ *  - 模型决定不再说话直接停（罕见但合法）
+ *
+ * 不是 fatal —— 当前 step 没东西可写就直接 stop，让 outer loop break 收尾。
+ */
+function isNoOutputError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "AI_NoOutputGeneratedError") return true;
+  return (
+    typeof error.message === "string" &&
+    /no output generated/i.test(error.message)
   );
 }

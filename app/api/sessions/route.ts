@@ -48,6 +48,8 @@ export async function POST(request: Request) {
     workspaceName?: unknown;
     workspaceAccessMode?: unknown;
     shellApprovalPolicy?: unknown;
+    permissionMode?: unknown;
+    planMode?: unknown;
     title?: unknown;
   } | null;
 
@@ -75,6 +77,12 @@ export async function POST(request: Request) {
         typeof body?.shellApprovalPolicy === "string"
           ? body.shellApprovalPolicy
           : undefined,
+      permissionMode:
+        typeof body?.permissionMode === "string"
+          ? body.permissionMode
+          : undefined,
+      planMode:
+        typeof body?.planMode === "boolean" ? body.planMode : undefined,
       title: typeof body?.title === "string" ? body.title : undefined,
     });
     return Response.json({ thread });

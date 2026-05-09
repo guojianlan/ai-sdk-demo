@@ -1,3 +1,8 @@
+import {
+  DEFAULT_PERMISSION_MODE,
+  normalizePermissionMode,
+  type PermissionMode,
+} from "@/lib/permissions";
 import { getSandbox } from "@/lib/sandbox";
 import type { Sandbox } from "@/lib/sandbox/interface";
 
@@ -56,5 +61,27 @@ export function getShellApprovalPolicy(context: unknown): ShellApprovalPolicy {
 
   return normalizeShellApprovalPolicy(
     (context as { shellApprovalPolicy: unknown }).shellApprovalPolicy,
+  );
+}
+
+/**
+ * 读取会话级 PermissionMode。
+ *
+ * 由路由层从 thread / 前端传入塞进 `experimental_context`。tool-helpers 的
+ * `approvedTool` 在 ACL 评估之后看这个值决定是否自动放行：
+ *  - bypassPermissions（且 settings.json 双闸放行）→ 全过
+ *  - acceptEdits + tool ∈ {write, edit} → 过
+ *  - default 或缺失 → 落回每个工具的 needsApproval
+ */
+export function getPermissionMode(context: unknown): PermissionMode {
+  if (
+    typeof context !== "object" ||
+    context === null ||
+    !("permissionMode" in context)
+  ) {
+    return DEFAULT_PERMISSION_MODE;
+  }
+  return normalizePermissionMode(
+    (context as { permissionMode: unknown }).permissionMode,
   );
 }

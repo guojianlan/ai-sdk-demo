@@ -31,6 +31,9 @@ export const readTool = approvedTool({
       .default(12000)
       .describe("Maximum number of characters to return."),
   }),
+  name: "read",
+  getRuleContent: ({ relativePath }) => relativePath,
+  getCwd: (ctx) => getWorkspaceToolContext(ctx).sandbox.workingDirectory,
   needsApproval: ({ relativePath }) =>
     env.dotEnvFileApproval && isDotEnvFilePath(relativePath),
   execute: async ({ maxChars, relativePath }, { experimental_context }) => {

@@ -1,11 +1,11 @@
 "use client";
 
-import type { PlanStep, PlanStepStatus } from "@/lib/tools";
+import type { PlanEntryStatus } from "@/lib/tools";
 
 import type { LooseToolPart } from "./types";
 
 /**
- * `todo_write` 的内联渲染。
+ * `update_plan` 的内联渲染。
  *
  * 设计要点：
  * - plan state 活在 `part.input`（AI SDK 会在 tool-call streaming 阶段陆续补全这个字段）；
@@ -14,13 +14,28 @@ import type { LooseToolPart } from "./types";
  * - 顶部有一条 progress bar，肉眼一扫就知道 "3/7 completed"
  * - 贴合项目 wireframe 美学：1px 边、mono label、sky-500 accent、方括号标签
  *
- * 历史兼容：旧 SQLite 里的 todo_write 快照可能还带 `done` / `blocked` / `skipped`
- * 字段。`resolveStatusConfig` 把这些映射到三态视觉，避免老消息渲染崩。
+ * Schema 兼容：
+ * - **新 schema (codex 风格)**：`{ explanation?: string, plan: [{ step, status }] }`
+ * - **旧 schema (todo_write)**：`{ goal?, steps: [{ id?, title, status, note? }] }`
+ *   旧 SQLite 里的 todo_write 快照可能还带 `done` / `blocked` / `skipped` 老 status
+ *   字段，`resolveStatusConfig` 把这些映射到三态视觉，避免老消息渲染崩。
  */
 
+type LegacyEntry = {
+  step?: string;
+  title?: string;
+  status?: string;
+  note?: string;
+  id?: string;
+};
+
 type UpdatePlanInputShape = {
+  // 新 schema
+  explanation?: string;
+  plan?: LegacyEntry[];
+  // 旧 schema 兼容
   goal?: string;
-  steps?: PlanStep[];
+  steps?: LegacyEntry[];
 };
 
 type StatusVisual = {
@@ -30,7 +45,7 @@ type StatusVisual = {
   textClass: string;
 };
 
-const STATUS_CONFIG: Record<PlanStepStatus, StatusVisual> = {
+const STATUS_CONFIG: Record<PlanEntryStatus, StatusVisual> = {
   pending: {
     label: "pending",
     bullet: "○",
@@ -55,7 +70,7 @@ const STATUS_CONFIG: Record<PlanStepStatus, StatusVisual> = {
 function resolveStatusConfig(status: string | undefined): StatusVisual {
   if (!status) return STATUS_CONFIG.pending;
   if (status in STATUS_CONFIG) {
-    return STATUS_CONFIG[status as PlanStepStatus];
+    return STATUS_CONFIG[status as PlanEntryStatus];
   }
   // legacy 兼容：done → completed；blocked / skipped 没有对应视觉，统一回到 pending
   // 灰色，让旧对话不会因为缺渲染分支炸掉。
@@ -67,13 +82,29 @@ function isCompletedStatus(status: string | undefined): boolean {
   return status === "completed" || status === "done";
 }
 
+/** 取每条目的标题：新 schema `step` 优先，老 schema 退回 `title`。 */
+function entryText(entry: LegacyEntry): string {
+  return (entry.step ?? entry.title ?? "").trim();
+}
+
 export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
   const input = (part.input ?? {}) as UpdatePlanInputShape;
+
+  // 新 `plan` 优先，缺则回落老 `steps`（兼容历史 todo_write 快照）
+  const entries = Array.isArray(input.plan)
+    ? input.plan
+    : Array.isArray(input.steps)
+      ? input.steps
+      : [];
+
+  // 新 schema 没 goal 字段，但兼容老消息——存在则展示
   const goal = input.goal?.trim() ?? "";
-  const steps = Array.isArray(input.steps) ? input.steps : [];
-  const total = steps.length;
-  const completedCount = steps.filter((s) => isCompletedStatus(s.status)).length;
-  const hasInProgress = steps.some((s) => s.status === "in_progress");
+  const explanation = input.explanation?.trim() ?? "";
+
+  const total = entries.length;
+  const completedCount = entries.filter((s) => isCompletedStatus(s.status))
+    .length;
+  const hasInProgress = entries.some((s) => s.status === "in_progress");
   const progress = total > 0 ? Math.round((completedCount / total) * 100) : 0;
 
   const state = part.state ?? "input-streaming";
@@ -92,7 +123,7 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
             ].join(" ")}
           />
           <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-700">
-            plan · todo_write
+            plan · update_plan
             {isStreaming && !isDone ? " · live" : ""}
           </span>
           <span className="ml-auto font-mono text-[10px] tabular-nums text-slate-600">
@@ -109,6 +140,15 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
           </div>
         )}
 
+        {explanation && (
+          <div className="mb-3 font-mono text-[11px] leading-5 text-slate-600">
+            <span className="mr-2 uppercase tracking-[0.18em] text-slate-500">
+              note
+            </span>
+            {explanation}
+          </div>
+        )}
+
         {total > 0 && (
           <div className="mb-3 h-1 w-full overflow-hidden rounded-full bg-slate-200">
             <div
@@ -119,12 +159,13 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
         )}
 
         <ol className="space-y-1.5">
-          {steps.map((step, idx) => {
-            const cfg = resolveStatusConfig(step.status);
-            const isCompleted = isCompletedStatus(step.status);
+          {entries.map((entry, idx) => {
+            const cfg = resolveStatusConfig(entry.status);
+            const isCompleted = isCompletedStatus(entry.status);
+            const text = entryText(entry);
             return (
               <li
-                key={step.id || `step-${idx}`}
+                key={entry.id || `step-${idx}`}
                 className="flex items-start gap-3 rounded-sm px-1 py-0.5"
               >
                 <span
@@ -143,18 +184,18 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
                       cfg.textClass,
                     ].join(" ")}
                   >
-                    {step.title || <em className="text-slate-400">(untitled)</em>}
+                    {text || <em className="text-slate-400">(untitled)</em>}
                   </div>
-                  {step.note && (
+                  {entry.note && (
                     <div className="mt-0.5 font-mono text-[11px] leading-5 text-slate-500">
-                      → {step.note}
+                      → {entry.note}
                     </div>
                   )}
                 </div>
                 <span
                   className={[
                     "shrink-0 rounded-sm border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em]",
-                    step.status === "in_progress"
+                    entry.status === "in_progress"
                       ? "border-sky-500 bg-white text-sky-700"
                       : isCompleted
                         ? "border-emerald-500 bg-white text-emerald-700"
@@ -166,7 +207,7 @@ export function UpdatePlanCard({ part }: { part: LooseToolPart }) {
               </li>
             );
           })}
-          {steps.length === 0 && (
+          {entries.length === 0 && (
             <li className="font-mono text-[11px] text-slate-500">
               (plan streaming…)
             </li>

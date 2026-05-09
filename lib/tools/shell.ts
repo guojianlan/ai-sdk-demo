@@ -85,6 +85,9 @@ export const shellTool = approvedTool({
     "- List files: `ls -la`, with `cwd: src`",
   ].join("\n"),
   inputSchema: shellInputSchema,
+  name: "shell",
+  getRuleContent: ({ command }) => command,
+  getCwd: (ctx) => getWorkspaceToolContext(ctx).sandbox.workingDirectory,
   needsApproval: ({ command }, ctx) =>
     shellNeedsApproval(command, getShellApprovalPolicy(ctx)),
   execute: async (

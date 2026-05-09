@@ -81,12 +81,55 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
-  // 下一条 migration 在这里追加，比如：
-  // {
-  //   version: 2,
-  //   name: "add-thread-tags",
-  //   sql: `ALTER TABLE threads ADD COLUMN tags TEXT;`,
-  // },
+  // B1：会话级 PermissionMode（default / acceptEdits / bypassPermissions）。
+  // 字段允许 NULL —— 老 thread 升级后默认值为 NULL，应用层读到 NULL 一律按
+  // DEFAULT_PERMISSION_MODE = "default" 处理。新 INSERT 都会写入有效值。
+  {
+    version: 2,
+    name: "add-permission-mode",
+    sql: `ALTER TABLE threads ADD COLUMN permission_mode TEXT;`,
+  },
+  // P1：会话级 plan mode（codex 风格 collaboration mode）。布尔语义：
+  // 0 = 关 / NULL = 关 / 1 = 开。NOT NULL DEFAULT 0 让老 thread 自动获得"关"。
+  {
+    version: 3,
+    name: "add-plan-mode",
+    sql: `ALTER TABLE threads ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;`,
+  },
+  // A2 Phase 1：跟踪每个 thread 的 jsonl 抽取游标 + 最后一次 Phase 1 时间。
+  // - last_offset：jsonl 已抽到第几行，下次从 offset+1 开始
+  // - last_phase1_at：方便 debug "上次跑过没"
+  // - retry_count：连续失败计数（warn-only retry，超 3 次跳过避免死循环）
+  {
+    version: 4,
+    name: "add-memory-extraction-state",
+    sql: `
+      CREATE TABLE IF NOT EXISTS memory_extraction_state (
+        thread_id      TEXT PRIMARY KEY,
+        last_offset    INTEGER NOT NULL DEFAULT 0,
+        last_phase1_at INTEGER,
+        retry_count    INTEGER NOT NULL DEFAULT 0,
+        updated_at     INTEGER NOT NULL
+      );
+    `,
+  },
+  // A3 Phase 2：单行表（id=1）跟踪整合器状态。
+  // - last_raw_hash：上次成功整合时 raw_memories.md 的 SHA256；hash 没变直接跳过 LLM 调用
+  // - last_phase2_at：上次成功整合的时间戳
+  // - retry_count：失败重试计数；触顶就摆烂等手动重试 / hash 自然变化
+  {
+    version: 5,
+    name: "add-memory-consolidation-state",
+    sql: `
+      CREATE TABLE IF NOT EXISTS memory_consolidation_state (
+        id             INTEGER PRIMARY KEY CHECK (id = 1),
+        last_raw_hash  TEXT,
+        last_phase2_at INTEGER,
+        retry_count    INTEGER NOT NULL DEFAULT 0,
+        updated_at     INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 /** 启动时跑：把 user_version 推到 latest，途中遇到失败抛错。 */

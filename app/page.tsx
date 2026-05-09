@@ -11,12 +11,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { DEFAULT_WORKSPACE_ACCESS_MODE } from "@/lib/chat-access-mode";
 import {
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODES,
+  type PermissionMode,
+} from "@/lib/permissions/mode";
+import {
   createSession,
   createSessionOnApi,
   deriveSessionPreview,
   deriveSessionTitle,
   fetchSessions,
   STORAGE_KEY,
+  updateSessionPermissionModeOnApi,
+  updateSessionPlanModeOnApi,
   updateSessionTitleOnApi,
   URL_SESSION_PARAM,
   type ChatSession,
@@ -207,38 +214,46 @@ export default function Home() {
   // sessions writeback effect → setSessions 又引发 re-render → 再 new 一个 transport
   // → 死循环（"Maximum update depth exceeded"）。
   //
-  // body 里的字段随 session 配置走；只有这些关键字段变化时才重新 new transport。
+  // **但**：useChat 在 mount 时就锁住 transport 实例，后续即使 transport 换新引用也不
+  // 重新读。所以以前把 permissionMode / planMode 写在 deps 里让 transport 重建是
+  // **没用的**——useChat 拿到的还是 mount 那一刻的 transport 闭包，body() 永远返回
+  // mount 时的旧值。表现：UI 把 chip 切到 PLAN: ON，下一条请求 body 里 planMode 还是
+  // false（去 Network 面板能看到）。
+  //
+  // 修法：transport **只创建一次**（deps=[]），body() 通过 sessionRef 读最新值。
+  // session 状态由 React 正常更新，每次 sendMessage 时 body() 现读 ref —— transport
+  // 实例不变，闭包不老化，permissionMode / planMode 切换立即生效。
+  const sessionRef = useRef<ChatSession | undefined>(activeSession);
+  sessionRef.current = activeSession;
+
   const chatTransport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/chat",
-        body: () => ({
-          // P3-b: chatId 是服务端持久化 + resume 的 key；就用 session id。
-          chatId: activeSessionId,
-          workspaceRoot: activeSession?.workspaceRoot ?? "",
-          workspaceName: activeSession?.workspaceName ?? "",
-          workspaceAccessMode:
-            activeSession?.workspaceAccessMode ?? DEFAULT_WORKSPACE_ACCESS_MODE,
-          shellApprovalPolicy:
-            activeSession?.shellApprovalPolicy ?? "untrusted",
-        }),
+        body: () => {
+          const s = sessionRef.current;
+          return {
+            // P3-b: chatId 是服务端持久化 + resume 的 key；就用 session id。
+            chatId: s?.id ?? "",
+            workspaceRoot: s?.workspaceRoot ?? "",
+            workspaceName: s?.workspaceName ?? "",
+            workspaceAccessMode:
+              s?.workspaceAccessMode ?? DEFAULT_WORKSPACE_ACCESS_MODE,
+            shellApprovalPolicy: s?.shellApprovalPolicy ?? "untrusted",
+            permissionMode: s?.permissionMode ?? DEFAULT_PERMISSION_MODE,
+            planMode: s?.planMode === true,
+          };
+        },
         // 关键：reconnectToStream 默认拼 `${api}/${options.chatId}/stream`，
         // 而 options.chatId 来自 useChat 的 `id`——我们的 chatInstanceId 里塞了
         // workspaceRoot（含斜杠），会把 URL 切成好几段导致 404。
         // 用 prepareReconnectToStreamRequest 改成拿真正的 sessionId 去拼，拍扁这个坑。
-        prepareReconnectToStreamRequest: ({ api }) => ({
-          api: activeSessionId
-            ? `${api}/${encodeURIComponent(activeSessionId)}/stream`
-            : api,
-        }),
+        prepareReconnectToStreamRequest: ({ api }) => {
+          const id = sessionRef.current?.id;
+          return { api: id ? `${api}/${encodeURIComponent(id)}/stream` : api };
+        },
       }),
-    [
-      activeSessionId,
-      activeSession?.workspaceRoot,
-      activeSession?.workspaceName,
-      activeSession?.workspaceAccessMode,
-      activeSession?.shellApprovalPolicy,
-    ],
+    [],
   );
 
   const initialMessages = useMemo(
@@ -419,6 +434,143 @@ export default function Home() {
   const activeAccessMode =
     activeSession?.workspaceAccessMode ?? DEFAULT_WORKSPACE_ACCESS_MODE;
 
+  /**
+   * Plan 模式下的实时进度：数最新一条 assistant 消息里的 tool-* part 数量。
+   * 仅 streaming 期间且 plan mode 开启时计算；其它情况返回 null。
+   *
+   * 用途：SessionHeader 状态点旁显示"探索 N 次"，让用户看到 agent 在干活——
+   * plan 模式过滤了 update_plan 工具，否则用户没有 plan checkbox 进度可看。
+   */
+  const planStepInfo = useMemo(() => {
+    if (!activeSession?.planMode) return null;
+    if (status !== "streaming" && status !== "submitted") return null;
+    const latest = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!latest) return null;
+    const toolCallCount = latest.parts.filter(
+      (p) => typeof p.type === "string" && p.type.startsWith("tool-"),
+    ).length;
+    return { toolCallCount };
+  }, [messages, activeSession?.planMode, status]);
+
+  /**
+   * 数当前还在跑的 spawn_agent 数量。判定标准：
+   *   tool part type = "tool-spawn_agent" 且 state ∈ {"input-streaming", "input-available"}
+   * （执行完毕的会变成 "output-available" / "output-error"，不算在跑）
+   *
+   * 用于 SessionHeader 显示"● N subagent 跑着"的紫色提示，避免 spawn_agent 长跑（30s-3min）
+   * 时用户以为对话卡死。
+   */
+  const activeSubagentCount = useMemo(() => {
+    let count = 0;
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      for (const p of m.parts) {
+        if (
+          typeof p.type === "string" &&
+          p.type === "tool-spawn_agent" &&
+          (p as { state?: string }).state !== undefined &&
+          ((p as { state: string }).state === "input-streaming" ||
+            (p as { state: string }).state === "input-available")
+        ) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }, [messages]);
+
+  /**
+   * 切换 PermissionMode：循环 default → acceptEdits → bypassPermissions → default。
+   * 流式中禁止切（避免 mid-step 状态混乱）；本地立即更新 UI，后端 PATCH 异步落库。
+   */
+  function handleCyclePermissionMode() {
+    if (!activeSession) return;
+    if (status === "streaming" || status === "submitted") return;
+    const current = activeSession.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    const idx = PERMISSION_MODES.indexOf(current);
+    const next: PermissionMode =
+      PERMISSION_MODES[(idx + 1) % PERMISSION_MODES.length] ??
+      DEFAULT_PERMISSION_MODE;
+    setSessions((current) =>
+      current.map((s) =>
+        s.id === activeSession.id ? { ...s, permissionMode: next } : s,
+      ),
+    );
+    void updateSessionPermissionModeOnApi(activeSession.id, next);
+  }
+
+  /**
+   * 切换 plan 模式开 / 关。流式中禁切；本地立即更新，后端 PATCH 异步落库。
+   * 切换会触发 chatTransport memo 重建（planMode 在 deps 里），下一次发送
+   * 自动按新的模式跑。
+   */
+  function handleTogglePlanMode() {
+    if (!activeSession) return;
+    if (status === "streaming" || status === "submitted") return;
+    const next = !(activeSession.planMode === true);
+    setSessions((current) =>
+      current.map((s) =>
+        s.id === activeSession.id ? { ...s, planMode: next } : s,
+      ),
+    );
+    void updateSessionPlanModeOnApi(activeSession.id, next);
+  }
+
+  /**
+   * 用户点 ProposedPlanCard 的"采用此方案"。
+   *
+   * 行为：
+   * 1. 关掉 plan 模式（触发 PATCH + 本地 state，下一次请求 body.planMode=false）
+   * 2. 自动发一条 user message 让 agent 按已经在历史里的 plan 实施
+   *
+   * plan 文本本身已经在 conversation 里，不必把它再 sendMessage 一次——agent 看到
+   * 上一条 assistant 的 `<proposed_plan>` + 我们的"开始实施"指令就能继续。
+   */
+  function handleAdoptPlan(planContent: string) {
+    if (!activeSession) return;
+    void planContent; // 不使用 —— plan 文本已在 conversation 历史里，agent 能看到
+    if (status === "streaming" || status === "submitted") return;
+
+    // 1. 切出 plan 模式
+    if (activeSession.planMode) {
+      setSessions((current) =>
+        current.map((s) =>
+          s.id === activeSession.id ? { ...s, planMode: false } : s,
+        ),
+      );
+      void updateSessionPlanModeOnApi(activeSession.id, false);
+    }
+
+    // 2. 发实施指令。略等一帧让 sessionRef 更新到 planMode=false，下一次 chat
+    //    请求才能带上正确的 planMode。React 的 setState 同步发起但 ref 赋值在
+    //    下一次 render 才更新——用 setTimeout(0) 让 ref 先到位再发请求。
+    window.setTimeout(() => {
+      void sendMessage({
+        text: "请按上面的 <proposed_plan> 开始实施这个方案。",
+      });
+    }, 0);
+  }
+
+  /**
+   * 用户点 ImplementationSummaryCard 的"创建 commit"。
+   *
+   * 直接发一条 user message 让 agent 跑 git status / git add / git commit。
+   * commit message 由 agent 自己根据 summary 浓缩，不在前端写死格式。
+   * shell 工具的 shellApprovalPolicy 仍然控制 git 命令是否要审批。
+   */
+  function handleCreateCommit(summaryContent: string) {
+    if (!activeSession) return;
+    void summaryContent; // summary 已在历史里 agent 能看到
+    if (status === "streaming" || status === "submitted") return;
+
+    void sendMessage({
+      text:
+        "请基于上面的 <implementation_summary>，跑 `git status` 看一下当前改动，" +
+        "然后用 `git add` + `git commit -m \"<message>\"` 创建一个 commit。" +
+        "commit message 用 summary 浓缩成一行（feat/fix/chore/refactor 前缀）。",
+    });
+  }
+
   const canSend =
     Boolean(activeSession?.workspaceRoot) &&
     Boolean(draft.trim()) &&
@@ -455,6 +607,10 @@ export default function Home() {
               status={status}
               statusLabel={statusLabel}
               onStop={() => void handleStop()}
+              onCyclePermissionMode={handleCyclePermissionMode}
+              onTogglePlanMode={handleTogglePlanMode}
+              planStepInfo={planStepInfo}
+              activeSubagentCount={activeSubagentCount}
             />
 
             <div className="flex min-h-0 flex-1 flex-col">
@@ -496,6 +652,8 @@ export default function Home() {
                           output,
                         })
                       }
+                      onAdoptPlan={handleAdoptPlan}
+                      onCreateCommit={handleCreateCommit}
                     />
                   ))
                 )}

@@ -10,6 +10,10 @@ import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
+import {
+  normalizePermissionMode,
+  type PermissionMode,
+} from "@/lib/permissions";
 import type { ShellApprovalPolicy } from "@/lib/tools";
 import { sanitizeChatUIMessages } from "@/lib/chat/sanitize-messages";
 import {
@@ -27,6 +31,7 @@ import {
 } from "@/lib/compaction";
 import { env, requireGatewayApiKey } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
+import { runPhase1ForThread } from "@/lib/memory";
 import { getSkills } from "@/lib/skills";
 import {
   createCancelableReadableStream,
@@ -55,6 +60,8 @@ export async function POST(request: Request) {
     workspaceName?: string;
     workspaceAccessMode?: WorkspaceAccessMode;
     shellApprovalPolicy?: ShellApprovalPolicy;
+    permissionMode?: PermissionMode;
+    planMode?: boolean;
   };
 
   const workspaceRoot = body.workspaceRoot?.trim();
@@ -73,6 +80,8 @@ export async function POST(request: Request) {
   const workspaceAccessMode = normalizeWorkspaceAccessMode(
     body.workspaceAccessMode,
   );
+  const permissionMode = normalizePermissionMode(body.permissionMode);
+  const planMode = body.planMode === true;
 
   // Upsert thread on every POST —— 兜底：如果前端没显式 POST /api/sessions
   // 创建（旧客户端 / 直接 API 调用），第一次发消息这里会补建 thread 元数据。
@@ -83,6 +92,8 @@ export async function POST(request: Request) {
     workspaceName: body.workspaceName,
     workspaceAccessMode,
     shellApprovalPolicy: body.shellApprovalPolicy,
+    permissionMode,
+    planMode,
     model: env.gateway.modelId,
   });
 
@@ -181,6 +192,39 @@ export async function POST(request: Request) {
   }
   // ---------------------------------------------------------------------
 
+  // A2 Phase 1 fire-and-forget：在主 workflow 启动**之前**触发上一段未处理的
+  // jsonl 抽取。
+  //
+  // 关键设计（对齐 codex）：
+  // - **不 await**：完全后台跑，主对话延时 0 影响
+  // - **抽的是上一轮**：当前请求的 user message 这时候还没写进 jsonl（fullSanitized
+  //   是这次刚 sanitize 的，写盘发生在 saveMessages 之后），extractor 看到的是
+  //   上一次 turn 的完整 transcript（user→assistant→tool→...→assistant）
+  // - **memoryEnabled=false 内部检查**：extractor 自己判，不在这里判，方便配置
+  //   未热加载时也能正确跳过
+  // - **错误静默**：runPhase1ForThread 自身不抛，所有失败都收进 result.error
+  void runPhase1ForThread({
+    threadId: chatId,
+    cwd: workspaceRoot,
+  })
+    .then((result) => {
+      if (result.error) {
+        console.warn(`[memory/phase1] chat=${chatId}: ${result.error}`);
+      } else if (result.wroteRawMemory || result.wroteSummary) {
+        console.log(
+          `[memory/phase1] chat=${chatId} processed=${result.newLinesProcessed} ` +
+            `wroteSummary=${result.wroteSummary} wroteRawMemory=${result.wroteRawMemory}`,
+        );
+      }
+    })
+    .catch((error) => {
+      // 理论上不会进这里（extractor 内部已 try/catch），保险再兜一层
+      console.warn(
+        `[memory/phase1] chat=${chatId} unexpected throw:`,
+        error instanceof Error ? error.message : error,
+      );
+    });
+
   // Skill discovery 进程内缓存：每次请求拿一份最新 metadata 列表（body 不在这里读）。
   // 这调用很轻——首次扫盘后 cached，后续就是 Map 命中。
   const skills = await getSkills();
@@ -195,6 +239,8 @@ export async function POST(request: Request) {
       workspaceName: body.workspaceName,
       workspaceAccessMode,
       shellApprovalPolicy: body.shellApprovalPolicy,
+      permissionMode,
+      planMode,
       conversationSummary: agentSummary,
       skills,
     },

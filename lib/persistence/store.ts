@@ -28,6 +28,10 @@ export type Thread = {
   workspaceName: string | null;
   workspaceAccessMode: string | null;
   shellApprovalPolicy: string | null;
+  /** 会话级 PermissionMode（default / acceptEdits / bypassPermissions），见 lib/permissions/mode.ts。NULL = 未设置 = 老 thread，按 DEFAULT 处理。 */
+  permissionMode: string | null;
+  /** Plan mode（codex 风格 collaboration mode）。SQLite INTEGER → boolean。 */
+  planMode: boolean;
   title: string | null;
   messageCount: number;
   createdAt: number;
@@ -41,6 +45,8 @@ type ThreadRow = {
   workspace_name: string | null;
   workspace_access_mode: string | null;
   shell_approval_policy: string | null;
+  permission_mode: string | null;
+  plan_mode: number; // 0 / 1
   title: string | null;
   message_count: number;
   created_at: number;
@@ -55,6 +61,8 @@ function rowToThread(row: ThreadRow): Thread {
     workspaceName: row.workspace_name,
     workspaceAccessMode: row.workspace_access_mode,
     shellApprovalPolicy: row.shell_approval_policy,
+    permissionMode: row.permission_mode,
+    planMode: row.plan_mode === 1,
     title: row.title,
     messageCount: row.message_count,
     createdAt: row.created_at,
@@ -79,6 +87,10 @@ export async function upsertThread(opts: {
   workspaceName?: string;
   workspaceAccessMode?: string;
   shellApprovalPolicy?: string;
+  /** 会话级权限模式。不传 → NULL（行为等价 DEFAULT）。 */
+  permissionMode?: string;
+  /** Plan 模式开关。不传 → false。 */
+  planMode?: boolean;
   title?: string;
   model?: string;
 }): Promise<Thread> {
@@ -95,14 +107,17 @@ export async function upsertThread(opts: {
   db.prepare(
     `INSERT INTO threads
        (id, workspace_root, workspace_name, workspace_access_mode,
-        shell_approval_policy, title, message_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        shell_approval_policy, permission_mode, plan_mode, title,
+        message_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
   ).run(
     opts.id,
     opts.workspaceRoot,
     opts.workspaceName ?? null,
     opts.workspaceAccessMode ?? null,
     opts.shellApprovalPolicy ?? null,
+    opts.permissionMode ?? null,
+    opts.planMode ? 1 : 0,
     opts.title ?? null,
     now,
     now,
@@ -134,12 +149,45 @@ export async function upsertThread(opts: {
     workspaceName: opts.workspaceName ?? null,
     workspaceAccessMode: opts.workspaceAccessMode ?? null,
     shellApprovalPolicy: opts.shellApprovalPolicy ?? null,
+    permissionMode: opts.permissionMode ?? null,
+    planMode: opts.planMode ?? false,
     title: opts.title ?? null,
     messageCount: 0,
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
   };
+}
+
+/**
+ * 单独更新某个 thread 的 permission_mode。前端 UI 切换模式时调（B3）。
+ *
+ * 不存在的 thread → no-op（幂等）。新值 = null 等价"清回默认"。
+ */
+export function updateThreadPermissionMode(
+  threadId: string,
+  permissionMode: string | null,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE threads SET permission_mode = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(permissionMode, Date.now(), threadId);
+}
+
+/**
+ * 单独切 plan mode 开关。UI plan-mode chip 点击时调（P3）。
+ * 存为 INTEGER 0/1，schema 默认 0。
+ */
+export function updateThreadPlanMode(
+  threadId: string,
+  planMode: boolean,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE threads SET plan_mode = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(planMode ? 1 : 0, Date.now(), threadId);
 }
 
 /** 拿单个 thread 元数据（不含 messages）。不存在 → null。 */

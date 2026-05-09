@@ -72,6 +72,26 @@ export async function saveMessages(
   const updateThread = db.prepare(
     `UPDATE threads SET message_count = ?, updated_at = ? WHERE id = ?`,
   );
+  // Dedupe by message.id —— PRIMARY KEY (thread_id, message_id) 不允许同 id 重复，
+  // 真撞上时 SQLITE_CONSTRAINT_PRIMARYKEY 会让整个 step 在 workflow 里反复重试。
+  // 防御性地用 Map 收口（later wins —— 同 id 后到的版本通常包含更完整的 parts，
+  // 比如同一条 assistant 消息流式过程中的多个快照）。dedupe 真触发时打 warn，
+  // 方便定位上游谁送了重复。
+  const dedupedMap = new Map<string, UIMessage>();
+  const duplicates: string[] = [];
+  for (const message of messages) {
+    if (dedupedMap.has(message.id)) {
+      duplicates.push(message.id);
+    }
+    dedupedMap.set(message.id, message);
+  }
+  if (duplicates.length > 0) {
+    console.warn(
+      `[persistence] saveMessages thread=${threadId} dropped ${duplicates.length} duplicate message id(s): ${duplicates.slice(0, 5).join(", ")}${duplicates.length > 5 ? " …" : ""}`,
+    );
+  }
+  const deduped = Array.from(dedupedMap.values());
+
   const now = Date.now();
   db.transaction((list: UIMessage[]) => {
     del.run(threadId);
@@ -88,13 +108,13 @@ export async function saveMessages(
     if (threadRow) {
       updateThread.run(list.length, now, threadId);
     }
-  })(messages);
+  })(deduped);
 
   // JSONL 镜像写入（best-effort，一次 syscall 写完整批）
   if (threadRow) {
     const filePath = getSessionFilePath(threadId, threadRow.created_at);
     const isoNow = new Date(now).toISOString();
-    const lines: SessionLine[] = messages.map((message) => ({
+    const lines: SessionLine[] = deduped.map((message) => ({
       timestamp: isoNow,
       type: "message" as const,
       payload: message,

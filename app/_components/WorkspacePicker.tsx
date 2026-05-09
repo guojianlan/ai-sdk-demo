@@ -10,8 +10,8 @@ import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
 } from "@/lib/chat-access-mode";
-// 直接 import 单文件，绕开 `@/lib/tools` barrel——后者会拉到 task.ts → explorer.ts
-// → devtools (node:fs)，client bundle 编译会挂。
+// 直接 import 单文件，绕开 `@/lib/tools` barrel——后者会拉到 spawn-agent.ts →
+// sub-agent.ts → devtools (node:fs)，client bundle 编译会挂。
 import {
   DEFAULT_SHELL_APPROVAL_POLICY,
   SHELL_APPROVAL_POLICIES,

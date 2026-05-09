@@ -1,6 +1,8 @@
 import type { ToolSet } from "ai";
 import { z } from "zod";
 
+import { PLAN_MODE_PROMPT } from "./plan-mode-prompt";
+
 import { createChatAgent } from "@/lib/chat-agent/builder";
 import {
   DEFAULT_WORKSPACE_ACCESS_MODE,
@@ -9,10 +11,16 @@ import {
 import { instrumentModel } from "@/lib/devtools";
 import { env } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
+import {
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODES,
+  type PermissionMode,
+} from "@/lib/permissions";
 import type { SkillMetadata } from "@/lib/skills";
 import {
   DEFAULT_SHELL_APPROVAL_POLICY,
   interactiveToolset,
+  memoryToolset,
   planToolset,
   shellToolset,
   SHELL_APPROVAL_POLICIES,
@@ -40,6 +48,7 @@ export const projectEngineerPersona = [
 export function buildProjectEngineerDeveloperRules(
   workspaceAccessMode: WorkspaceAccessMode,
   workspaceName: string,
+  planMode: boolean = false,
 ): string {
   const hasWorkspaceTools = workspaceAccessMode === "workspace-tools";
 
@@ -51,7 +60,7 @@ export function buildProjectEngineerDeveloperRules(
     "TASK PERSISTENCE:",
     "- You MUST iterate and keep going until the problem is solved. Do not end your turn prematurely.",
     "- When you say \"Next I will do X\" or \"Now I will do Y\", you MUST actually do X or Y. Never describe what you would do and then end your turn instead of doing it.",
-    "- When you create a todo list (via `todo_write`), you MUST complete every item before finishing. Only terminate when all items are `completed`. NEVER end your turn while any step is still `in_progress` or `pending` — if you've actually done the work, send one more `todo_write` snapshot reflecting reality FIRST.",
+    "- When you create a plan (via `update_plan`), you MUST complete every entry before finishing. Only terminate when all entries are `completed`. NEVER end your turn while any step is still `in_progress` or `pending` — if you've actually done the work, send one more `update_plan` snapshot reflecting reality FIRST.",
     "- If you encounter an error, debug it. If the fix introduces new errors, fix those too. Continue until everything passes.",
     "- If the user's request is \"resume\", \"continue\", or \"try again\", check the todo list for the last incomplete item and continue from there without asking what to do next.",
     "- If you genuinely cannot proceed (missing info, blocked on a decision only the user can make), call `ask_user_question` to surface the obstacle — do NOT silently end your turn.",
@@ -98,7 +107,7 @@ export function buildProjectEngineerDeveloperRules(
         "- Start by inspecting the workspace with tools before you explain the project.",
         "- Read the smallest useful set of files first, then expand only if needed.",
         "- Treat build output, dependency folders, and generated files as low priority unless the user asks for them.",
-        "- For questions that clearly need reading many files to answer (e.g. 'how does auth work', 'what is the architecture of module X'), prefer delegating to `task` — it runs in an isolated context and returns only a short summary, keeping this conversation lean. Don't use it for single-file lookups.",
+        "- For sub-tasks that need 5+ tool calls (surveys like 'how does auth work', or self-contained chunks of work), prefer delegating to `spawn_agent` — it runs in an isolated context, can read/write/shell, and returns only a short summary, keeping this conversation lean. Don't use it for single-file lookups or 1–2 step tasks.",
         "- For edits: always read the target file before calling `write` or `edit`, and keep the scope tight (one concern per edit).",
         "",
         "SHELL (`shell`):",
@@ -108,13 +117,42 @@ export function buildProjectEngineerDeveloperRules(
         "- Do NOT run interactive commands (vim, less, top, ssh) — there is no TTY. Don't spawn long-running servers (`next dev`, etc.) — they outlive the chat.",
         "- Don't compose with shell metacharacters that produce side-effects (`>`, `>>`, `2>&1`, command substitution, backgrounding `&`) — they're blocked by the safety check anyway.",
         "",
-        "PLAN TRACKING (`todo_write`):",
-        "- For any multi-step task (>= 3 steps), call `todo_write` EARLY — right after the clarification gate is satisfied, before diving into the first tool call — to commit to an initial plan. Each step should be one concrete action, not a category.",
-        "- Mark a step `in_progress` BEFORE you begin work on it; mark it `completed` IMMEDIATELY after finishing, not in batches.",
-        "- Only ONE step should be `in_progress` at a time.",
-        "- Send the WHOLE list every time (snapshot, not diff). Keep step `id` stable across updates — don't rename.",
-        "- Status values: `pending` / `in_progress` / `completed` only. If a step turns out infeasible, do NOT silently skip it — call `ask_user_question` to resolve, or mark it `completed` with a `note` explaining what was actually done in its place.",
-        "- See TASK PERSISTENCE above: don't end your turn with any step still `pending` or `in_progress`.",
+        "PLAN TRACKING (`update_plan`):",
+        "- For any multi-step task (>= 3 steps), call `update_plan` EARLY — right after the clarification gate is satisfied, before diving into the first tool call — to commit to an initial plan. Each entry should be one concrete action, not a category.",
+        "- Mark an entry `in_progress` BEFORE you begin work on it; mark it `completed` IMMEDIATELY after finishing, not in batches.",
+        "- Only ONE entry should be `in_progress` at a time.",
+        "- Send the WHOLE list every time (snapshot, not diff). Keep entry ORDER stable across updates — the UI tracks position by index.",
+        "- Status values: `pending` / `in_progress` / `completed` only. If an entry turns out infeasible, do NOT silently skip it — call `ask_user_question` to resolve, or mark it `completed` and use the optional `explanation` field to note what was actually done in its place.",
+        "- See TASK PERSISTENCE above: don't end your turn with any entry still `pending` or `in_progress`.",
+        "",
+        "LONG-TERM MEMORY (`memory_write`):",
+        "- This tool is for cross-session, cross-project facts the user wants you to remember NEXT TIME they open a new chat. NOT for in-conversation state (use prose / `update_plan` for that).",
+        "- Use it when:",
+        "    - User says 'remember X' / 'next time, do Y' / 'don't forget Z'",
+        "    - You learn a durable fact about the user (role, preferences, working style) — write after they confirm it",
+        "    - A project decision is made that affects future turns",
+        "    - User gives feedback on your behavior; capture the *why*, not just the rule",
+        "- Do NOT use it for:",
+        "    - Code patterns, file paths, architecture facts (those are in the codebase)",
+        "    - Ephemeral 'user just asked about X' state",
+        "    - Anything sensitive (passwords, tokens, PII)",
+        "- Pick `type` carefully: user / feedback / project / reference. See tool description.",
+        "- The `oneLineSummary` is what future-you sees in MEMORY.md — make it specific and useful.",
+        "- This tool may be filtered out for projects that opt out via `.agents/settings.json` `memoryEnabled: false` — if you don't see it in your toolset, just acknowledge and move on without it.",
+        "",
+        "IMPLEMENTATION SUMMARY (after non-trivial multi-file changes):",
+        "- After completing work that touched 2+ files OR ran tests/builds, end your final assistant message with an `<implementation_summary>` block. The frontend renders this as a green card with [Create commit] / [Copy] buttons.",
+        "- Skip the block for trivial single-file edits, single-line fixes, or pure read/answer turns — just say it inline.",
+        "- Format the block content as Markdown with three short sections:",
+        "    **Files changed**: bullet list of files (relative paths) with one-phrase intent each",
+        "    **Verification**: what you ran (tests / lint / typecheck) and pass/fail",
+        "    **Notes**: anything the user should know — decisions made, caveats, suggested follow-ups",
+        "- Block format requirements (mirrors `<proposed_plan>` —— UI parser is the same):",
+        "    1. Opening tag `<implementation_summary>` on its own line",
+        "    2. Markdown content starts on the next line",
+        "    3. Closing tag `</implementation_summary>` on its own line",
+        "    4. At most ONE block per turn, at the END of your final message",
+        "- Keep it short. The user will read this — long-winded summaries get skimmed.",
       ]
     : [
         ...taskPersistence,
@@ -127,13 +165,21 @@ export function buildProjectEngineerDeveloperRules(
         "- If the user asks for project-specific facts, explain that workspace access is disabled and ask them to switch to the workspace-tools mode.",
       ];
 
-  return [
+  const baseRules = [
     `Workspace display name: ${workspaceName}`,
     `Access mode: ${workspaceAccessMode}`,
     "",
     "Behavior rules for this workspace:",
     ...modeRules,
-  ].join("\n");
+  ];
+
+  // Plan 模式 prompt：附在最后，128 行规则会**覆盖**前面的工具使用建议。
+  // 这是 codex 设计——plan 阶段所有"动手"指令都被搁置，由 plan.md 接管。
+  if (planMode) {
+    return [...baseRules, "", "---", "", PLAN_MODE_PROMPT].join("\n");
+  }
+
+  return baseRules.join("\n");
 }
 
 export const projectEngineerCallOptionsSchema = z.object({
@@ -145,6 +191,15 @@ export const projectEngineerCallOptionsSchema = z.object({
   shellApprovalPolicy: z
     .enum(SHELL_APPROVAL_POLICIES as unknown as [ShellApprovalPolicy, ...ShellApprovalPolicy[]])
     .default(DEFAULT_SHELL_APPROVAL_POLICY),
+  permissionMode: z
+    .enum(PERMISSION_MODES as unknown as [PermissionMode, ...PermissionMode[]])
+    .default(DEFAULT_PERMISSION_MODE),
+  /**
+   * Plan 模式（codex collaboration mode）。开启后 buildDeveloperRules 在末尾
+   * 注入 PLAN_MODE_PROMPT，且 chat workflow 会过滤 update_plan / write / edit
+   * 这些 mutating tool。
+   */
+  planMode: z.boolean().default(false),
 });
 
 /**
@@ -153,7 +208,7 @@ export const projectEngineerCallOptionsSchema = z.object({
  *
  * 注意：
  * - interactiveToolset 在所有 access mode 下都可用（即使 `no-tools` 模式也允许 agent 追问）
- * - planToolset（todo_write）同样通用——多步任务的进度展示即使没工具也有价值
+ * - planToolset（update_plan）同样通用——多步任务的进度展示即使没工具也有价值
  * - skillToolset（skill）是 hybrid skill 系统的入口；workflow 在创建 agent 时通过
  *   experimental_context.skills 注入当前可用 skill 列表，工具按 name 读 SKILL.md body
  * - shellToolset（shell）只在 workspace-tools mode 挂；no-tools mode 下不暴露
@@ -167,6 +222,7 @@ export const projectEngineerStaticToolset = {
   ...interactiveToolset,
   ...planToolset,
   ...skillToolset,
+  ...memoryToolset,
 };
 
 /**
@@ -192,12 +248,15 @@ export function createProjectEngineerAgent(params: {
       buildProjectEngineerDeveloperRules(
         options.workspaceAccessMode,
         workspaceName,
+        options.planMode,
       ),
     buildExperimentalContext: ({ options, workspaceRoot, workspaceName }) => ({
       workspaceRoot,
       workspaceName,
       workspaceAccessMode: options.workspaceAccessMode,
       shellApprovalPolicy: options.shellApprovalPolicy,
+      permissionMode: options.permissionMode,
+      planMode: options.planMode,
     }),
     tools: params.tools,
     onFinish: params.onFinish,

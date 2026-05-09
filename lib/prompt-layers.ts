@@ -17,9 +17,14 @@
  *   1. Persona                —— 最稳定，放最顶
  *   2. Developer rules        —— 运行期规则，次之
  *   3. Environment context    —— 客观环境事实
- *   4. User instructions      —— 用户项目规则（AGENTS.md）
- *   5. Available skills       —— 当前可触发的 skill 清单（仅 name+description；body 通过 `skill` 工具按需拉）
- *   6. Conversation summary   —— P4-b compaction 的 handoff 摘要（可选，有才加）
+ *   4. Global memory          —— 跨对话长期记忆（`~/.local-agent/memory/MEMORY.md`，可选）
+ *   5. User instructions      —— 用户项目规则（AGENTS.md）
+ *   6. Available skills       —— 当前可触发的 skill 清单（仅 name+description；body 通过 `skill` 工具按需拉）
+ *   7. Conversation summary   —— P4-b compaction 的 handoff 摘要（可选，有才加）
+ *
+ * 为什么 globalMemory 放在 envContext 之后、userInstructions 之前：memory 是
+ * **跨项目跨对话**的长期事实（user identity / preferences / cross-session decisions），
+ * 比 AGENTS.md（项目级）更稳；语义上属于"agent 自身的长期知识"层。
  *
  * 详见 docs/codex-prompt-layering.md 的对照表。
  */
@@ -38,6 +43,15 @@ export type PromptLayers = {
    *   </environment_context>
    */
   environmentContext: string;
+  /**
+   * 跨对话长期记忆：`~/.local-agent/memory/MEMORY.md` 内容已 trim + 截断。
+   * null 表示 memory 不存在 / 为空 / 加载失败 —— 自动跳过这层。
+   *
+   * 跟 conversationSummary 的区别：
+   *   - conversationSummary：**当前对话**被压缩的部分（一次性 / 短期）
+   *   - globalMemory：**跨对话** 长期事实（持久 / 跨 session）
+   */
+  globalMemory: string | null;
   /**
    * 用户项目规则：AGENTS.md / AGENTS.override.md 拼接结果。
    * 没有任何 AGENTS.md 时为 null，会自动被跳过。
@@ -66,6 +80,7 @@ const LAYER_HEADINGS = {
   persona: "# Persona",
   developerRules: "# Developer rules",
   environmentContext: "# Environment context",
+  globalMemory: "# Long-term memory (cross-session)",
   userInstructions: "# User project instructions",
   availableSkills: "# Available skills",
   conversationSummary: "# Conversation summary so far",
@@ -91,6 +106,9 @@ export function assemblePromptLayers(layers: PromptLayers): string {
   pushSection(LAYER_HEADINGS.persona, layers.persona);
   pushSection(LAYER_HEADINGS.developerRules, layers.developerRules);
   pushSection(LAYER_HEADINGS.environmentContext, layers.environmentContext);
+  if (layers.globalMemory) {
+    pushSection(LAYER_HEADINGS.globalMemory, layers.globalMemory);
+  }
   if (layers.userInstructions) {
     pushSection(LAYER_HEADINGS.userInstructions, layers.userInstructions);
   }
@@ -119,6 +137,13 @@ export function explainPromptLayers(layers: PromptLayers): {
     ["environmentContext", LAYER_HEADINGS.environmentContext, layers.environmentContext],
   ];
 
+  if (layers.globalMemory) {
+    entries.push([
+      "globalMemory",
+      LAYER_HEADINGS.globalMemory,
+      layers.globalMemory,
+    ]);
+  }
   if (layers.userInstructions) {
     entries.push([
       "userInstructions",

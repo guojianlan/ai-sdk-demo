@@ -105,6 +105,9 @@ export const writeTool = approvedTool({
     "- Never write files that contain secrets (.env, credentials, api keys); writes to `.env*` paths require explicit user approval.",
   ].join("\n"),
   inputSchema: writeInputSchema,
+  name: "write",
+  getRuleContent: ({ relativePath }) => relativePath,
+  getCwd: (ctx) => getWorkspaceToolContext(ctx).sandbox.workingDirectory,
   needsApproval: ({ relativePath }) =>
     env.dotEnvFileApproval && isDotEnvFilePath(relativePath),
   execute: async ({ content, relativePath }, { experimental_context }) => {
@@ -153,6 +156,9 @@ export const editTool = approvedTool({
     "- Edits to `.env*` paths require explicit user approval.",
   ].join("\n"),
   inputSchema: editInputSchema,
+  name: "edit",
+  getRuleContent: ({ relativePath }) => relativePath,
+  getCwd: (ctx) => getWorkspaceToolContext(ctx).sandbox.workingDirectory,
   needsApproval: ({ relativePath }) =>
     env.dotEnvFileApproval && isDotEnvFilePath(relativePath),
   execute: async (

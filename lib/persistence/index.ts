@@ -19,6 +19,8 @@ export {
   archiveThread,
   unarchiveThread,
   updateThreadTitle,
+  updateThreadPermissionMode,
+  updateThreadPlanMode,
   deleteThread,
   type Thread,
 } from "./store";

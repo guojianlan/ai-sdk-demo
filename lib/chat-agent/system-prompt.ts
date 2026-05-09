@@ -1,3 +1,4 @@
+import { type LoadedMemory } from "@/lib/memory";
 import { assemblePromptLayers } from "@/lib/prompt-layers";
 import { buildSessionPrimer } from "@/lib/session-primer";
 import type { SkillMetadata } from "@/lib/skills";
@@ -22,6 +23,8 @@ export async function buildSystemPrompt(input: {
   workspaceRoot: string;
   skills?: SkillMetadata[] | null;
   conversationSummary?: string | null;
+  /** 跨对话长期记忆（A1）。null = 没启用 / 没文件。 */
+  globalMemory?: LoadedMemory | null;
 }): Promise<string> {
   const primer = await buildSessionPrimer({
     workspaceRoot: input.workspaceRoot,
@@ -38,15 +41,43 @@ export async function buildSystemPrompt(input: {
     : null;
 
   const skillsSection = buildSkillsSection(input.skills ?? null);
+  const memorySection = buildGlobalMemorySection(input.globalMemory ?? null);
 
   return assemblePromptLayers({
     persona: input.persona,
     developerRules: input.developerRules,
     environmentContext: primer.environmentContext,
+    globalMemory: memorySection,
     userInstructions: primer.userInstructions,
     availableSkills: skillsSection,
     conversationSummary: summarySection,
   });
+}
+
+/**
+ * 把 LoadedMemory 渲染成 system prompt 段落。null → null（这层会被跳过）。
+ *
+ * 给模型一段引导，说清楚 memory 的语义：
+ *   - 这是跨 session 的长期记忆，不是当前对话内容
+ *   - 用来回忆用户身份 / 偏好 / 过往决定 / 项目背景
+ *   - 找不到对应记忆是正常的（可能是新用户 / 新项目）
+ *
+ * 截断标记由 loader 已经加在 content 末尾，这里不重复处理。
+ */
+export function buildGlobalMemorySection(
+  memory: LoadedMemory | null,
+): string | null {
+  if (!memory) return null;
+  const intro = [
+    "Below is your long-term memory file (cross-session, cross-project). It contains facts the user has shared, preferences, decisions made in earlier conversations, and project background notes.",
+    "",
+    "Usage:",
+    "- Treat it as authoritative reference for who the user is and what they've decided before.",
+    "- Don't mention you're reading from \"memory\" — just use the facts naturally.",
+    "- If a fact in memory contradicts what the user just said in this turn, trust the current turn (memory may be stale).",
+    "- If memory is empty / missing, that's fine — proceed without prior context.",
+  ].join("\n");
+  return [intro, "", "---", "", memory.content].join("\n");
 }
 
 /**

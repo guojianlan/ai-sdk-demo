@@ -5,6 +5,8 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { z } from "zod";
 
 import { buildSystemPrompt } from "@/lib/chat-agent/system-prompt";
+import { loadGlobalMemory } from "@/lib/memory";
+import { isMemoryEnabled, loadSettings } from "@/lib/permissions";
 import { connectSandbox } from "@/lib/sandbox";
 import type { SkillMetadata } from "@/lib/skills";
 import { normalizeWorkspaceRoot } from "@/lib/workspaces";
@@ -106,12 +108,24 @@ export function createChatAgent<
         workspaceName,
       });
 
+      // A1+A4: 跨对话长期记忆 —— 受项目级 memoryEnabled 设置控制。
+      // 启用时（默认）现读 `~/.local-agent/memory/MEMORY.md`；关掉时直接 null
+      // 跳过这层注入，省 token + 省一次 fs read。设置走 `.agents/settings.json`
+      // 层级查找，从 workspaceRoot 向上找。
+      // 变量名 `userSettings` 是为了避免跟外层 `prepareCall({ options, ...settings })`
+      // 那个 rest 重名。
+      const userSettings = loadSettings(workspaceRoot);
+      const globalMemory = isMemoryEnabled(userSettings)
+        ? await loadGlobalMemory()
+        : null;
+
       const instructions = await buildSystemPrompt({
         persona: config.persona,
         developerRules,
         workspaceRoot,
         skills: config.skills ?? null,
         conversationSummary: config.conversationSummary ?? null,
+        globalMemory,
       });
 
       const baseContext = config.buildExperimentalContext({
