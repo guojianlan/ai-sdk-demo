@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 例外：.env.example 是模板，要追踪
+!.env.example
 
 # vercel
 .vercel
