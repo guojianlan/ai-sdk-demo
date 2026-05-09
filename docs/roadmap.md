@@ -24,6 +24,10 @@
 | **P3-c** | Interactive tools（交互卡片抽象） | ✅ done | `approvedTool` / `interactiveTool` 两个 helper + `ask_question` / `ask_choice` / `show_reference` 三张卡 + CLARIFICATION GATE prompt 层 + markdown 渲染；顺手发现 `ask_choice` 的 recommendedId 标记让 UX 好很多 |
 | **P4-a** | Testing + 模拟模型 | ⬜ pending | — |
 | **P4-b** | Context compaction | ✅ done | SQLite 存摘要 + LLM 压缩 + token 阈值自动触发 + 作为新 prompt layer 注入 + 压缩通知作为 role=system UIMessage 在 UI 上渲染；踩过两个坑：(1) estimateTokens 先做了 tool output 截断严重低估 token 数；(2) splitForCompaction 的 split 点必须向前回退到 user message，否则 kept 以 assistant 起头 → LLM finish=other 空转 |
+| **P5** | OS 沙箱 + 持久化 + open-agents 对齐 | ✅ done | ASRT sandbox hook + SQLite 双写 JSONL；详见 commit `09937a3` |
+| **P6** | 权限三层防御 | ✅ done | ACL（settings.json rules）+ PermissionMode 三档（default/acceptEdits/bypassPermissions）+ 工具 needsApproval 三层叠加；详见 [docs/05-09.md](./05-09.md) |
+| **P7** | 高级 agent 行为模式 | ✅ done | Plan mode（codex 风格 + ProposedPlanCard）+ implementation_summary 卡 + spawn_agent v3（递归 + 深度限制 + UX）+ todo_write→update_plan 重命名简化；详见 [docs/05-09.md](./05-09.md) |
+| **P8** | Memory 跨对话长期记忆 | ✅ done | A1 注入 MEMORY.md + A2 Phase 1 抽取（fire-and-forget）+ A3 Phase 2 整合（hash skip）+ A4 memory_write tool + 项目级 `memoryEnabled` 总开关；详见 [docs/05-09.md](./05-09.md) |
 
 **状态图例**：⬜ `pending` · 🟡 `in-progress` · ✅ `done` · ⏸️ `paused` · ❌ `dropped`
 
