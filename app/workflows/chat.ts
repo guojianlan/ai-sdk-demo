@@ -440,19 +440,36 @@ function isAbortError(error: unknown): boolean {
 }
 
 /**
- * AI SDK `AI_NoOutputGeneratedError` —— 当 step 产生 0 个 visible chunk 时
- * smoothStream flush 阶段会抛。常见原因：
- *  - 模型只输出 reasoning（被 sendReasoning:false 过滤掉）
- *  - 本地 gateway 偶发空响应
- *  - 模型决定不再说话直接停（罕见但合法）
+ * 上游 LLM 调用的"非致命错误"集合 —— step 产生 0 chunk 或上游连接异常断开。
  *
- * 不是 fatal —— 当前 step 没东西可写就直接 stop，让 outer loop break 收尾。
+ * 三类场景都按相同方式处理（graceful stop，让 outer loop break）：
+ *
+ * 1. **AI_NoOutputGeneratedError**：smoothStream 在 flush 阶段抛。常见原因：
+ *    - 模型只输出 reasoning（被 sendReasoning:false 过滤掉）
+ *    - 本地 gateway 偶发空响应
+ *    - 模型决定不再说话直接停（罕见但合法）
+ *
+ * 2. **empty_stream / upstream closed**：gateway 客户端**自己重试 N 次**仍然失败
+ *    抛 "Failed after 3 attempts. Last error: empty_stream: upstream stream
+ *    closed before first payload"。这时候已经重试过了，再让 workflow 重试只
+ *    是再多浪费几次 LLM 调用。
+ *
+ * 3. **stream cancelled / ECONNRESET / ETIMEDOUT 等明显断连**：同样降级 stop。
+ *
+ * 跟 isAbortError 区分：abort 是用户主动停（点"停止"按钮），这里是被动断流。
+ * 都走 "stop" finishReason，但 abort 走 `aborted: true` 分支。
  */
 function isNoOutputError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.name === "AI_NoOutputGeneratedError") return true;
+  const msg = typeof error.message === "string" ? error.message : "";
   return (
-    typeof error.message === "string" &&
-    /no output generated/i.test(error.message)
+    /no output generated/i.test(msg) ||
+    /empty_stream/i.test(msg) ||
+    /upstream stream closed/i.test(msg) ||
+    /econnreset/i.test(msg) ||
+    /etimedout/i.test(msg) ||
+    // gateway 客户端的"我自己重试都失败了"统一标志：
+    /failed after \d+ attempts?/i.test(msg)
   );
 }
