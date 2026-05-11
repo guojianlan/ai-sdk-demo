@@ -54,11 +54,13 @@ export function splitOnBlocks(text: string): AssistantSegment[] {
   // 当 text 段输出，标签开始之后的全部内容（含开标签自身）丢弃不渲染——等闭标签
   // 到了下一次重渲染时 regex 会匹配整对然后切成卡。
   const tail = text.slice(last);
+  let sawUnclosedTag = false;
   if (tail.length > 0) {
     const unclosedMatch = tail.match(
       /<(proposed_plan|implementation_summary)>/,
     );
     if (unclosedMatch && unclosedMatch.index !== undefined) {
+      sawUnclosedTag = true;
       const beforeOpenTag = tail.slice(0, unclosedMatch.index).trim();
       if (beforeOpenTag) out.push({ kind: "text", content: beforeOpenTag });
       // 故意不输出未闭合的标签部分 —— 等闭合到了再渲染
@@ -68,7 +70,10 @@ export function splitOnBlocks(text: string): AssistantSegment[] {
     }
   }
 
-  if (out.length === 0) {
+  // 只有在"完全没识别到任何块标签"时才 fallback 整段。如果识别到了未闭合的开标签，
+  // 我们故意丢弃它后面的内容（等闭标签到达），此时 out 可能为空，但绝不能 fallback
+  // 回原文 —— 否则用户会看到生 `<proposed_plan>` 标签。
+  if (out.length === 0 && !sawUnclosedTag) {
     return [{ kind: "text", content: text }];
   }
   return out;
