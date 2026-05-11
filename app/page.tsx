@@ -544,9 +544,13 @@ export default function Home() {
     // 2. 发实施指令。略等一帧让 sessionRef 更新到 planMode=false，下一次 chat
     //    请求才能带上正确的 planMode。React 的 setState 同步发起但 ref 赋值在
     //    下一次 render 才更新——用 setTimeout(0) 让 ref 先到位再发请求。
+    //
+    // 措辞不要带 `<proposed_plan>` XML 标签：那是给模型解析用的内部协议，对
+    // 用户来说"自己消息里出现奇怪 tag"反而别扭。上一条 assistant 消息历史里
+    // 就有完整方案，"上面的方案"四个字 agent 完全能懂。
     window.setTimeout(() => {
       void sendMessage({
-        text: "请按上面的 <proposed_plan> 开始实施这个方案。",
+        text: "采纳上面的方案，请开始实施。",
       });
     }, 0);
   }

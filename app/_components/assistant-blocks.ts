@@ -26,8 +26,9 @@ export type AssistantSegment =
  *
  * 健壮性：
  * - 没匹配到任何块 → 返回 [{ kind: "text", content: text }]
- * - 流式中只到了开标签、闭标签还在路上 → 找不到完整对，**当前 chunk 全部当 text 段返回**，
- *   等闭标签到了下一次重渲染才切成 block 段
+ * - 流式中只到了开标签、闭标签还在路上 → 当前 chunk 里发现未闭合的开标签：
+ *   **把开标签和后面的内容都隐藏掉**（不渲染成生 XML），等闭标签到了下一次
+ *   重渲染才切成 block 段。否则用户会短暂看到 `<proposed_plan>` 这串裸标签。
  * - 不支持嵌套（codex 也不支持）
  * - 标签内外空白 trim 掉，避免渲染时多余空行
  */
@@ -48,10 +49,25 @@ export function splitOnBlocks(text: string): AssistantSegment[] {
     if (inner) out.push({ kind: tag, content: inner });
     last = m.index + m[0].length;
   }
-  if (last < text.length) {
-    const tail = text.slice(last).trim();
-    if (tail) out.push({ kind: "text", content: tail });
+
+  // 处理 tail：可能含未闭合的开标签（流式中）。如果有，把开标签前的"干净文本"
+  // 当 text 段输出，标签开始之后的全部内容（含开标签自身）丢弃不渲染——等闭标签
+  // 到了下一次重渲染时 regex 会匹配整对然后切成卡。
+  const tail = text.slice(last);
+  if (tail.length > 0) {
+    const unclosedMatch = tail.match(
+      /<(proposed_plan|implementation_summary)>/,
+    );
+    if (unclosedMatch && unclosedMatch.index !== undefined) {
+      const beforeOpenTag = tail.slice(0, unclosedMatch.index).trim();
+      if (beforeOpenTag) out.push({ kind: "text", content: beforeOpenTag });
+      // 故意不输出未闭合的标签部分 —— 等闭合到了再渲染
+    } else {
+      const trimmed = tail.trim();
+      if (trimmed) out.push({ kind: "text", content: trimmed });
+    }
   }
+
   if (out.length === 0) {
     return [{ kind: "text", content: text }];
   }
