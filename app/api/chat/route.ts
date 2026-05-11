@@ -32,6 +32,7 @@ import {
 import { env, requireGatewayApiKey } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
 import { runPhase1ForThread } from "@/lib/memory";
+import { truncateToolPartsForTransport } from "@/lib/output-truncation";
 import { getSkills } from "@/lib/skills";
 import {
   createCancelableReadableStream,
@@ -42,6 +43,10 @@ import {
 type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
 
 const ACTIVE_STREAM_RECONCILIATION_MAX_ATTEMPTS = 3;
+
+// 每个 tool input/output 字符串字段进 workflow queue 前的硬上限。
+// 1.5 MiB queue cap / ~100 可能的 tool part ≈ 15 KB 安全预算；取 12 KB 留点余地。
+const WORKFLOW_TRANSPORT_MAX_STRING_BYTES = 12_000;
 
 export async function POST(request: Request) {
   try {
@@ -229,11 +234,25 @@ export async function POST(request: Request) {
   // 这调用很轻——首次扫盘后 cached，后续就是 Map 命中。
   const skills = await getSkills();
 
+  // 传输层硬截断：workflow queue（world-local 实现）单条消息体上限 1.5 MiB，
+  // 超了就抛 `SyntaxError: Unterminated string in JSON at position 1572864`。
+  // compaction 在大输入下自己也会 LLM 超时 fallback，救不了场。这里在 start()
+  // 之前把每个 tool-like part 的 input/output 字符串截到 ~12KB，结构保留，
+  // 保证不管历史多脏都能进队列。
+  const agentMessagesForWorkflow = truncateToolPartsForTransport(
+    agentMessages,
+    WORKFLOW_TRANSPORT_MAX_STRING_BYTES,
+  );
+  const fullMessagesForWorkflow = truncateToolPartsForTransport(
+    fullSanitized,
+    WORKFLOW_TRANSPORT_MAX_STRING_BYTES,
+  );
+
   const run = await start(runAgentWorkflow, [
     {
       chatId,
-      agentMessages,
-      fullMessages: fullSanitized,
+      agentMessages: agentMessagesForWorkflow,
+      fullMessages: fullMessagesForWorkflow,
       compactionNotice,
       workspaceRoot,
       workspaceName: body.workspaceName,

@@ -4,6 +4,7 @@ import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
 
 import { env } from "@/lib/env";
+import { truncateMiddle } from "@/lib/output-truncation";
 import type { Sandbox } from "@/lib/sandbox/interface";
 
 // 大型生成目录和依赖目录通常噪声很多，也会拖慢遍历速度。
@@ -207,11 +208,15 @@ export async function readWorkspaceFile(
     };
   }
 
+  // codex 风格 middle-truncate：超 maxChars 时保留头+尾，中间换成
+  // `[... N bytes omitted ...]` —— 重要尾部信息（文件末尾的 export、
+  // 错误堆栈最后一帧等）不会被砍掉。之前用 `slice(0, maxChars) + [truncated]`
+  // 头部截断，对长源文件不友好。
+  const truncated = content.length > maxChars;
   return {
     path: path.relative(workspaceRoot, absolutePath),
-    content:
-      content.length > maxChars ? `${content.slice(0, maxChars)}\n\n[truncated]` : content,
-    truncated: content.length > maxChars,
+    content: truncated ? truncateMiddle(content, maxChars) : content,
+    truncated,
     totalChars: content.length,
   };
 }

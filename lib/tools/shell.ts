@@ -2,6 +2,10 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import {
+  DEFAULT_TRUNCATE_BYTES,
+  truncateMiddle,
+} from "@/lib/output-truncation";
 import { approvedTool } from "@/lib/tool-helpers";
 import { toolErr, toolOk } from "@/lib/tool-result";
 import { resolveWorkspacePath } from "@/lib/workspaces";
@@ -21,6 +25,10 @@ import { shellNeedsApproval } from "./shell-approval";
  * - cwd 必须是 workspace-relative 或绝对路径，且解析后的实际目录得在 workspaceRoot
  *   之下——`resolveWorkspacePath` 拒绝 ".." 逃逸。
  * - 走 `sandbox.exec`，超时 120s，stdout/stderr 各自有 1MB 上限（sandbox 层做的）。
+ *   **进 model context 前再过一道 `truncateMiddle(..., 10K)` 中间截断**（codex 风格）——
+ *   sandbox 1MB 是给 UI 看的，模型只需要头尾各 ~5KB 就够看懂这次命令干了啥；中间
+ *   被剪掉的部分用 `[... N bytes omitted ...]` 标记让 agent 知道有信息丢失，需要
+ *   narrow 命令重跑。参考 `codex-rs/utils/output-truncation/src/lib.rs`。
  * - 不支持 detached / 长进程。要起 dev server 这类后台服务，请用 npm run dev:all
  *   外面拉一个独立终端，agent 不应该 fork 后台进程到 chat lifecycle 之外。
  */
@@ -114,14 +122,27 @@ export const shellTool = approvedTool({
         { signal: abortSignal },
       );
 
+      // sandbox 已经做了 1MB head-cap（防 OOM）。这里再做 codex 风格的
+      // middle-truncate 到 10K bytes —— 把头尾保留给模型看（命令开头通常
+      // 是 progress / 输入回显，尾部通常是 exit summary / 错误信息），
+      // 中间砍掉换成 `[... N bytes omitted ...]`。
+      // 这层截断**只影响进 model context 的内容**，UI 仍能看到 sandbox 截过
+      // 的完整 1MB（如果将来分开两路返回的话；目前 UI 也读这层）。
+      const stdout = truncateMiddle(result.stdout, DEFAULT_TRUNCATE_BYTES);
+      const stderr = truncateMiddle(result.stderr, DEFAULT_TRUNCATE_BYTES);
+      const truncated =
+        result.truncated ||
+        stdout !== result.stdout ||
+        stderr !== result.stderr;
+
       return toolOk({
         command,
         cwd: path.relative(workspaceRoot, resolvedCwd) || ".",
         success: result.success,
         exitCode: result.exitCode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        truncated: result.truncated,
+        stdout,
+        stderr,
+        truncated,
       });
     } catch (error) {
       return toolErr(error);
