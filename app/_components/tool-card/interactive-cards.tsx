@@ -140,8 +140,13 @@ function AskChoiceCard({ part, onToolOutput }: InteractiveCardProps) {
         {input.question || "(missing question)"}
       </div>
       <ul className="space-y-2">
-        {options.map((option) => {
+        {options.map((option, index) => {
           const isRecommended = option.id === recommendedId;
+          // ID badge 显示**序号**（1/2/3/...）而不是 option.id —— 后者通常是
+          // 模型生成的 slug（"repo-health" / "web-quality"），32px 宽 badge
+          // 装不下，会丑陋截断。序号简洁、稳定、不会爆字符限制。
+          // 提交时仍然用 option.label 作为答案，跟 id 解耦。
+          const badge = `${index + 1}`;
           return (
             <li key={option.id}>
               <button
@@ -157,13 +162,13 @@ function AskChoiceCard({ part, onToolOutput }: InteractiveCardProps) {
               >
                 <span
                   className={[
-                    "mt-0.5 inline-flex w-8 shrink-0 justify-center rounded-sm border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em]",
+                    "mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border font-mono text-[12px] font-semibold tabular-nums",
                     isRecommended
                       ? "border-sky-500 bg-white text-sky-700"
                       : "border-slate-300 bg-slate-50 text-slate-600",
                   ].join(" ")}
                 >
-                  {option.id.slice(0, 6)}
+                  {badge}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">

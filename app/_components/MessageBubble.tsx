@@ -115,10 +115,14 @@ export function MessageBubble({
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
         className={[
-          "relative max-w-[88%] space-y-3 rounded-md border bg-white px-5 py-4",
+          "relative space-y-3 rounded-md border bg-white px-5 py-4",
+          // assistant 气泡：固定 88% 宽 —— 防止 tool card 长度抖动（第一个 tool
+          // 短第三个 tool 长会让气泡反复变宽，肉眼看到突变）。固定后牺牲一点
+          // "短回答留太多空白"的空间感，换稳定的视觉锚点。
+          // user 气泡保持 fit-to-content（用户输入通常长度差异不大）。
           isUser
-            ? "border-sky-500 border-l-[3px]"
-            : "border-slate-300 border-l-[3px] border-l-slate-900",
+            ? "max-w-[88%] border-sky-500 border-l-[3px]"
+            : "w-[88%] border-slate-300 border-l-[3px] border-l-slate-900",
         ].join(" ")}
       >
         <div className="flex items-center gap-2">

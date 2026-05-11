@@ -150,7 +150,34 @@ export function deriveSessionPreview(messages: UIMessage[]): string {
         message.role !== "system" && extractMessageText(message),
     );
 
-  return extractMessageText(lastTextMessage);
+  // 侧栏 preview 也跑一次 strip：assistant 消息里 `<proposed_plan>` /
+  // `<implementation_summary>` XML 块对用户来说没意义，但被 LLM 写在 text part
+  // 里，extractMessageText 拿到的是含标签的原文。直接展示会让 sidebar 出现
+  // "<proposed_plan> # Title ## Summary ..." 这种生 XML 文本。
+  return stripAssistantBlocks(extractMessageText(lastTextMessage));
+}
+
+/**
+ * 把 assistant text 里的 XML 块拆解：
+ * - 完整对（`<tag>...</tag>`）→ 用块内 markdown 内容替代标签
+ * - 未闭合的开标签（流式中）→ 标签和后面的内容全部丢弃
+ *
+ * 跟 `app/_components/assistant-blocks.ts` 的 splitOnBlocks 同思路，但这里
+ * 输出**纯文本**（给 sidebar / 任何不需要渲染卡片的场景用），不分段。
+ */
+function stripAssistantBlocks(text: string): string {
+  if (!text) return text;
+  // 完整对：用块内 trim 后的内容替代
+  let out = text.replace(
+    /<(proposed_plan|implementation_summary)>([\s\S]*?)<\/\1>/g,
+    (_, _tag, inner: string) => inner.trim(),
+  );
+  // 未闭合的开标签：截断到开标签之前
+  const unclosed = out.match(/<(proposed_plan|implementation_summary)>/);
+  if (unclosed && unclosed.index !== undefined) {
+    out = out.slice(0, unclosed.index);
+  }
+  return out.trim();
 }
 
 export function formatTimestamp(value: string): string {
