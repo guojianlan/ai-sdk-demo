@@ -107,7 +107,33 @@ async function runAgentLoop(
 
   const limit = await getOuterStepLimit();
 
+  // workflow 内的 token budget 上限。对齐 codex 的 70% 模型窗口策略。
+  // 复用 env.compaction.thresholdTokens（默认 60_000）作为软上限：超了就主动
+  // graceful stop，不让 LLM 调用打过去爆 context。
+  //
+  // 跟 P4-b（per-POST compaction）的关系：
+  // - P4-b 在 POST 入口跑一次 LLM 压缩老对话，保证**进入 workflow 时**起点 token
+  //   合理（60k 以下）。
+  // - 这里是 workflow **每步前**再 check 一次 —— 大库 plan 模式跑十几步 tool
+  //   call 后累计 tool 输出可能让 modelMessages 涨到 100k+，此时再调一次 LLM
+  //   就 timeout / empty_stream。提前 break，让用户看到 partial 进度而不是错误。
+  const tokenBudgetSoftCap = await getTokenBudgetSoftCap();
+
+  let tokenBudgetTripped = false;
+
   for (let step = 0; step < limit; step++) {
+    // 每步前估算下一次 LLM 调用的 input token（modelMessages 累积大小）。
+    // 估算用 char count / 3 同 compaction —— 粗但够用做"快爆了"判断。
+    const currentTokenEstimate = estimateModelMessageTokens(modelMessages);
+    if (currentTokenEstimate > tokenBudgetSoftCap) {
+      console.warn(
+        `[workflow/chat] chat=${options.chatId} step=${step + 1} token budget tripped (estimated=${currentTokenEstimate} > cap=${tokenBudgetSoftCap}); breaking loop with finishReason=stop`,
+      );
+      finalFinishReason = "stop";
+      tokenBudgetTripped = true;
+      break;
+    }
+
     // toUIMessageStream 的 originalMessages 用于 message id 基准：
     // - step 0：用 options.agentMessages（用户消息历史）
     // - step >0：用上一轮的 pendingResponseMessage，让 stream 继续追加到同一条 assistant 消息
@@ -173,6 +199,12 @@ async function runAgentLoop(
   if (exhaustedSteps) {
     console.warn(
       `[workflow/chat] chat=${options.chatId} hit OUTER_STEP_LIMIT=${limit}; loop terminated`,
+    );
+  }
+
+  if (tokenBudgetTripped) {
+    console.warn(
+      `[workflow/chat] chat=${options.chatId} stopped due to token budget; user should start a new chat for follow-up`,
     );
   }
 
@@ -379,6 +411,41 @@ async function getOuterStepLimit(): Promise<number> {
   "use step";
   const { env } = await import("@/lib/env");
   return env.outerStepLimit;
+}
+
+/**
+ * Workflow 内 token 软上限。复用 env.compaction.thresholdTokens（同一个
+ * 60_000 默认值）—— 既是 P4-b compaction 触发线，也是 workflow loop 的 stop
+ * 线。语义统一：超过这个数 = "对话 context 太大了"。
+ *
+ * 为啥不另设 env：双阈值会让人混乱（"啥时候压缩、啥时候 stop"）。一个值控
+ * 制两件事最清楚：进 POST 时超了就压缩；workflow 内动态涨上去再超了就 stop。
+ */
+async function getTokenBudgetSoftCap(): Promise<number> {
+  "use step";
+  const { env } = await import("@/lib/env");
+  return env.compaction.thresholdTokens;
+}
+
+/**
+ * 粗估 ModelMessage[] 的 token 数。
+ *
+ * 跟 lib/compaction.ts 的 estimateTokens 同思路（char count / 3），但作用于
+ * ModelMessage 而不是 UIMessage（workflow 内部的格式不同）。
+ *
+ * 精度：±30%，但用来做"快爆了"判断够用 —— 真要精确等以后接 tiktoken。
+ */
+function estimateModelMessageTokens(messages: ReadonlyArray<unknown>): number {
+  if (messages.length === 0) return 0;
+  // JSON.stringify 全部 message 然后 / 3。简单粗暴但稳定。
+  // 复杂 content（multimodal / tool 输出 base64 等）通过 JSON 长度自然反映。
+  try {
+    return Math.ceil(JSON.stringify(messages).length / 3);
+  } catch {
+    // 极端情况 stringify 失败（含 circular ref 等）—— 返 0 让 loop 继续，
+    // 否则会把每次请求都强制截断
+    return 0;
+  }
 }
 
 async function persistAssistantSnapshot(
