@@ -1,0 +1,168 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildSystemPrompt > 可选层：传入 conversationSummary 时插 handoff 段 1`] = `
+"# Persona
+
+You are a project engineer.
+
+# Developer rules
+
+## Rules
+
+- Be concise.
+
+# Environment context
+
+<environment_context>
+  <cwd><FIXTURE_ROOT></cwd>
+  <shell>NORMALIZED</shell>
+  <current_date>2026-05-12</current_date>
+  <timezone>NORMALIZED</timezone>
+</environment_context>
+
+# User project instructions
+
+# AGENTS.md instructions for AGENTS.md
+
+<INSTRUCTIONS>
+# Fixture Project
+
+Treat all TypeScript code as authoritative.
+Run \`npm test\` before claiming a task is done.
+</INSTRUCTIONS>
+
+# Conversation summary so far
+
+The conversation has been compacted. The section below summarizes earlier messages that are no longer in the message history. Treat it as handoff context — the user has NOT just said these things in the current turn.
+
+## USER'S CORE REQUEST
+Refactor the auth middleware.
+
+## COMPLETED
+- Read lib/auth.ts"
+`;
+
+exports[`buildSystemPrompt > 可选层：传入 globalMemory 时插 long-term memory 段 1`] = `
+"# Persona
+
+You are a project engineer.
+
+# Developer rules
+
+## Rules
+
+- Be concise.
+
+# Environment context
+
+<environment_context>
+  <cwd><FIXTURE_ROOT></cwd>
+  <shell>NORMALIZED</shell>
+  <current_date>2026-05-12</current_date>
+  <timezone>NORMALIZED</timezone>
+</environment_context>
+
+# Long-term memory (cross-session)
+
+Below is your long-term memory file (cross-session, cross-project). It contains facts the user has shared, preferences, decisions made in earlier conversations, and project background notes.
+
+Usage:
+- Treat it as authoritative reference for who the user is and what they've decided before.
+- Don't mention you're reading from "memory" — just use the facts naturally.
+- If a fact in memory contradicts what the user just said in this turn, trust the current turn (memory may be stale).
+- If memory is empty / missing, that's fine — proceed without prior context.
+
+---
+
+- User prefers terse responses.
+- User is a senior engineer.
+
+# User project instructions
+
+# AGENTS.md instructions for AGENTS.md
+
+<INSTRUCTIONS>
+# Fixture Project
+
+Treat all TypeScript code as authoritative.
+Run \`npm test\` before claiming a task is done.
+</INSTRUCTIONS>"
+`;
+
+exports[`buildSystemPrompt > 可选层：传入 skills 时插 Available skills 段落 1`] = `
+"# Persona
+
+You are a project engineer.
+
+# Developer rules
+
+## Rules
+
+- Be concise.
+
+# Environment context
+
+<environment_context>
+  <cwd><FIXTURE_ROOT></cwd>
+  <shell>NORMALIZED</shell>
+  <current_date>2026-05-12</current_date>
+  <timezone>NORMALIZED</timezone>
+</environment_context>
+
+# User project instructions
+
+# AGENTS.md instructions for AGENTS.md
+
+<INSTRUCTIONS>
+# Fixture Project
+
+Treat all TypeScript code as authoritative.
+Run \`npm test\` before claiming a task is done.
+</INSTRUCTIONS>
+
+# Available skills
+
+Use the \`skill\` tool to load any of the skills listed below. Each skill is a focused playbook of instructions that extends what you can do in this conversation.
+When to invoke:
+- The user types "/<skill-name>" — invoke that skill IMMEDIATELY before any other tool.
+- The user's request strongly matches a skill's description — invoke and follow its instructions.
+- Otherwise, prefer your standard tools.
+- Skills marked as "model-gated" below cannot be invoked by you directly — wait for the user to type /<name>.
+
+Available skills:
+- \`browse\`: Headless browser for QA testing.
+- \`qa\` _(model-gated)_: End-to-end QA + auto-fix loop."
+`;
+
+exports[`buildSystemPrompt > 拼装基线：persona + developerRules + env + AGENTS.md 1`] = `
+"# Persona
+
+You are a project engineer.
+
+# Developer rules
+
+## Rules
+
+- Be concise.
+- Use tools when uncertain.
+
+# Environment context
+
+<environment_context>
+  <cwd><FIXTURE_ROOT></cwd>
+  <shell>NORMALIZED</shell>
+  <current_date>2026-05-12</current_date>
+  <timezone>NORMALIZED</timezone>
+</environment_context>
+
+# User project instructions
+
+# AGENTS.md instructions for AGENTS.md
+
+<INSTRUCTIONS>
+# Fixture Project
+
+Treat all TypeScript code as authoritative.
+Run \`npm test\` before claiming a task is done.
+</INSTRUCTIONS>"
+`;

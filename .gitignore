@@ -53,3 +53,6 @@ tmp
 /test-results/
 /playwright-report/
 /playwright/.cache/
+
+# E2E isolated AGENT_STORAGE_DIR — Playwright spec writes chat DB + memory here
+/.e2e-storage/
