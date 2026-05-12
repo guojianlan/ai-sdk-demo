@@ -107,18 +107,21 @@ export function buildSkillsSection(skills: SkillMetadata[] | null): string | nul
     ? '- Skills marked as "model-gated" below cannot be invoked by you directly — wait for the user to type /<name>.'
     : "";
 
-  const intro = [
+  // 注意：故意分两段拼。前半的 `""` 是有意保留的段内空行；后半的两个可选
+  // hint 是条件 line（空了就不要那行）。过去一刀切 `.filter(len>0)` 把段内
+  // 空行也滤掉了 —— intro 段落和 "When to invoke:" 列表被挤在一起。
+  const introStatic = [
     "Use the `skill` tool to load any of the skills listed below. Each skill is a focused playbook of instructions that extends what you can do in this conversation.",
     "",
     "When to invoke:",
     '- The user types "/<skill-name>" — invoke that skill IMMEDIATELY before any other tool.',
     "- The user's request strongly matches a skill's description — invoke and follow its instructions.",
     "- Otherwise, prefer your standard tools.",
-    userInvocableHint,
-    modelGatedHint,
-  ]
-    .filter((line) => line.length > 0)
-    .join("\n");
+  ];
+  const introConditional = [userInvocableHint, modelGatedHint].filter(
+    (line) => line.length > 0,
+  );
+  const intro = [...introStatic, ...introConditional].join("\n");
 
   const lines = skills.map((s) => {
     const flags: string[] = [];

@@ -96,36 +96,66 @@ async function sendChat(
   await expect(sendButton).toHaveText(/发送/, { timeout: 120_000 });
 }
 
-test("memory pipeline 观测：跑两轮 chat 后 dump MEMORY.md / raw_memories.md", async ({
-  page,
-}, testInfo) => {
+/**
+ * 把 memory 三件套（MEMORY.md / raw_memories.md / rollout summaries）attach
+ * 到 testInfo report 里。各 test 共用，行为是"快照 + 贴报告 + 不做内容硬断言"。
+ */
+async function dumpMemoryToReport(
+  testInfo: import("@playwright/test").TestInfo,
+  attachmentPrefix: string,
+): Promise<{
+  memoryIndexBytes: number;
+  rawMemoriesBytes: number;
+  rolloutEntries: string[];
+}> {
   const storageDir = resolveStorageDir();
   const memoryDir = path.join(storageDir, "memory");
   const memoryIndexPath = path.join(memoryDir, "MEMORY.md");
   const rawMemoriesPath = path.join(memoryDir, "raw_memories.md");
   const rolloutDir = path.join(memoryDir, "rollout_summaries");
 
-  // 跑测前快照——后面对比"这一轮跑出来的"
-  const before = {
-    memoryIndex: await readIfExists(memoryIndexPath),
-    rawMemories: await readIfExists(rawMemoriesPath),
-  };
-  await testInfo.attach("memory-before.json", {
-    body: Buffer.from(
-      JSON.stringify(
-        {
-          storageDir,
-          memoryIndexPath,
-          rawMemoriesPath,
-          memoryIndexBytes: before.memoryIndex?.length ?? 0,
-          rawMemoriesBytes: before.rawMemories?.length ?? 0,
-        },
-        null,
-        2,
-      ),
-    ),
-    contentType: "application/json",
+  const memoryIndex = await readIfExists(memoryIndexPath);
+  const rawMemories = await readIfExists(rawMemoriesPath);
+
+  await testInfo.attach(`${attachmentPrefix}-MEMORY.md`, {
+    body: Buffer.from(memoryIndex ?? "(file not found)"),
+    contentType: "text/markdown",
   });
+  await testInfo.attach(`${attachmentPrefix}-raw_memories.md`, {
+    body: Buffer.from(rawMemories ?? "(file not found)"),
+    contentType: "text/markdown",
+  });
+
+  let rolloutEntries: string[] = [];
+  try {
+    rolloutEntries = (await fs.readdir(rolloutDir)).sort();
+    if (rolloutEntries.length > 0) {
+      const lastEntry = rolloutEntries.at(-1)!;
+      const lastSummary = await readIfExists(path.join(rolloutDir, lastEntry));
+      await testInfo.attach(`${attachmentPrefix}-rollout-${lastEntry}`, {
+        body: Buffer.from(lastSummary ?? "(empty)"),
+        contentType: "text/markdown",
+      });
+    }
+  } catch {
+    // 目录还没生成
+  }
+  await testInfo.attach(`${attachmentPrefix}-rollout-listing.txt`, {
+    body: Buffer.from(rolloutEntries.join("\n") || "(none)"),
+    contentType: "text/plain",
+  });
+
+  return {
+    memoryIndexBytes: memoryIndex?.length ?? 0,
+    rawMemoriesBytes: rawMemories?.length ?? 0,
+    rolloutEntries,
+  };
+}
+
+test("身份 + 偏好 类记忆：dump 后人肉 review", async ({ page }, testInfo) => {
+  const memoryDir = path.join(resolveStorageDir(), "memory");
+
+  const before = await dumpMemoryToReport(testInfo, "before");
 
   await page.goto("/");
   await ensureWorkspaceBound(page);
@@ -151,57 +181,15 @@ test("memory pipeline 观测：跑两轮 chat 后 dump MEMORY.md / raw_memories.
   // A2 是 fire-and-forget——给它一点时间真的写盘
   await page.waitForTimeout(15_000);
 
-  // 跑测后读
-  const after = {
-    memoryIndex: await readIfExists(memoryIndexPath),
-    rawMemories: await readIfExists(rawMemoriesPath),
-  };
+  const after = await dumpMemoryToReport(testInfo, "after");
 
-  // 把内容贴到报告里供人肉 review
-  await testInfo.attach("MEMORY.md.after", {
-    body: Buffer.from(after.memoryIndex ?? "(file not found)"),
-    contentType: "text/markdown",
-  });
-  await testInfo.attach("raw_memories.md.after", {
-    body: Buffer.from(after.rawMemories ?? "(file not found)"),
-    contentType: "text/markdown",
-  });
+  const rawGrew = after.rawMemoriesBytes > before.rawMemoriesBytes;
+  const rolloutExists = after.rolloutEntries.length > 0;
 
-  // rollout summary 目录列表（每个 thread 一份）
-  let rolloutListing = "(rollout_summaries dir not found)";
-  try {
-    const entries = await fs.readdir(rolloutDir);
-    rolloutListing = entries.join("\n");
-
-    // 把最近一份 summary 也贴出来
-    if (entries.length > 0) {
-      const lastEntry = entries.sort().at(-1)!;
-      const lastSummary = await readIfExists(path.join(rolloutDir, lastEntry));
-      await testInfo.attach(`rollout_${lastEntry}`, {
-        body: Buffer.from(lastSummary ?? "(empty)"),
-        contentType: "text/markdown",
-      });
-    }
-  } catch {
-    // 目录不存在，跳过
-  }
-  await testInfo.attach("rollout_listing.txt", {
-    body: Buffer.from(rolloutListing),
-    contentType: "text/plain",
-  });
-
-  // Soft 检查：至少 raw_memories.md 或 rollout summary 之一应该有新增内容
-  // —— 证明 A2 Phase 1 确实跑了 fire-and-forget（即使没 finish 也至少 wrote 部分）
-  const rawGrew =
-    (after.rawMemories?.length ?? 0) > (before.rawMemories?.length ?? 0);
-  const rolloutExists = rolloutListing !== "(rollout_summaries dir not found)";
-
-  // 不做 hard fail——A2 在某些 LLM 错误 / 短对话场景下可能跳过，这是已知行为
-  // 仅 console 输出供 debug，不影响 test pass
   console.log(
-    `[memory.spec] rawGrew=${rawGrew} rolloutExists=${rolloutExists} ` +
-      `memoryIndexBytes=${after.memoryIndex?.length ?? 0} ` +
-      `rawMemoriesBytes=${after.rawMemories?.length ?? 0}`,
+    `[memory.spec/identity] rawGrew=${rawGrew} rolloutExists=${rolloutExists} ` +
+      `memoryIndexBytes=${after.memoryIndexBytes} ` +
+      `rawMemoriesBytes=${after.rawMemoriesBytes}`,
   );
 
   // 唯一的 hard assertion：memoryDir 应该存在（A1 loader 至少跑过）
@@ -211,7 +199,67 @@ test("memory pipeline 观测：跑两轮 chat 后 dump MEMORY.md / raw_memories.
     .stat(memoryDir)
     .then(() => true)
     .catch(() => false);
-  expect(memoryDirExists, "memory dir should be created by A1/A2/A3 pipeline").toBe(
-    true,
+  expect(
+    memoryDirExists,
+    "memory dir should be created by A1/A2/A3 pipeline",
+  ).toBe(true);
+});
+
+/**
+ * 第二个观测 spec：覆盖**技术决策类**记忆抽取。
+ *
+ * 上一个 spec 测了"身份 / 偏好 / 项目目标"——抽取器命中率很高、scope tag 也准。
+ * 但 codex 风格 memory pipeline 真正难的是**判断什么算"决策"**：
+ *   - "我们用 SQLite 而不是 IndexedDB，因为单进程够用" ← 应该抽
+ *   - "我现在饿了" ← 不该抽
+ *   - "这个 PR 要在周四前 merge" ← 项目状态，可抽
+ *
+ * 跑串行（playwright.config.ts `fullyParallel: false, workers: 1`），共享同一个
+ * AGENT_STORAGE_DIR；这个 spec 之后看 MEMORY.md，应该能看到第一个 spec 的"身份/偏好"
+ * **加上**本 spec 新抽出来的"决策"条目—— Phase 2 consolidator 的 merge 行为
+ * 在此被天然验证。
+ */
+test("技术决策类记忆：dump 后人肉 review", async ({ page }, testInfo) => {
+  const before = await dumpMemoryToReport(testInfo, "before");
+
+  await page.goto("/");
+  await ensureWorkspaceBound(page);
+
+  // 第一轮：抛三条明确的技术决策 + 一条噪音 + 一条无关琐事
+  await sendChat(
+    page,
+    [
+      "请直接回答，不要使用任何工具。我整理一下这个项目的几个技术决策：",
+      "1. 我们决定用 SQLite 持久化聊天历史，而不是 IndexedDB，因为是单进程 dev server 部署。",
+      "2. 我们用 search-replace 风格的 edit 工具（open-agents 思路），而不是 codex 的 apply_patch—— P1-a 选型时为了节约学习时间。",
+      "3. context compaction 用 LLM 摘要 + role=system UIMessage 标注，不是简单 token 截断—— 摘要进 system prompt 而不进 message history。",
+      "另外随便提一下：我现在有点饿，待会儿要去吃饭——这是噪音。",
+      "请用一句话回复：知道了。",
+    ].join("\n"),
   );
+
+  // 第二轮触发 A2 抽取
+  await sendChat(
+    page,
+    "请直接回答，不要使用任何工具。3 乘 7 等于多少？只回答数字。",
+  );
+
+  await page.waitForTimeout(15_000);
+
+  const after = await dumpMemoryToReport(testInfo, "after");
+
+  const rawGrew = after.rawMemoriesBytes > before.rawMemoriesBytes;
+  const rolloutGrew = after.rolloutEntries.length > before.rolloutEntries.length;
+
+  console.log(
+    `[memory.spec/decisions] rawGrew=${rawGrew} rolloutGrew=${rolloutGrew} ` +
+      `memoryIndexBytes=${after.memoryIndexBytes} ` +
+      `rawMemoriesBytes=${after.rawMemoriesBytes}`,
+  );
+
+  // 软断言：rolloutEntries 应该至少有一条（A2 一定跑出了 summary）
+  expect(
+    after.rolloutEntries.length,
+    "Phase 1 should have written at least one rollout summary",
+  ).toBeGreaterThan(0);
 });

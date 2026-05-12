@@ -22,7 +22,7 @@ You are a project engineer.
 
 # User project instructions
 
-# AGENTS.md instructions for AGENTS.md
+# AGENTS.md instructions
 
 <INSTRUCTIONS>
 # Fixture Project
@@ -79,7 +79,7 @@ Usage:
 
 # User project instructions
 
-# AGENTS.md instructions for AGENTS.md
+# AGENTS.md instructions
 
 <INSTRUCTIONS>
 # Fixture Project
@@ -111,7 +111,7 @@ You are a project engineer.
 
 # User project instructions
 
-# AGENTS.md instructions for AGENTS.md
+# AGENTS.md instructions
 
 <INSTRUCTIONS>
 # Fixture Project
@@ -123,6 +123,7 @@ Run \`npm test\` before claiming a task is done.
 # Available skills
 
 Use the \`skill\` tool to load any of the skills listed below. Each skill is a focused playbook of instructions that extends what you can do in this conversation.
+
 When to invoke:
 - The user types "/<skill-name>" — invoke that skill IMMEDIATELY before any other tool.
 - The user's request strongly matches a skill's description — invoke and follow its instructions.
@@ -157,7 +158,7 @@ You are a project engineer.
 
 # User project instructions
 
-# AGENTS.md instructions for AGENTS.md
+# AGENTS.md instructions
 
 <INSTRUCTIONS>
 # Fixture Project

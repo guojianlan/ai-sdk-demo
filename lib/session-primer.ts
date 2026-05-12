@@ -235,7 +235,14 @@ async function readDocsWithBudget(
     }
 
     const displayPath = path.relative(workspaceRoot, absolutePath) || ".";
-    const header = `# AGENTS.md instructions for ${displayPath || path.basename(absolutePath)}`;
+    // 文件就在 workspace 根（displayPath = "AGENTS.md"）时，"for AGENTS.md"
+    // 是赘述——直接 `# AGENTS.md instructions` 即可。子目录里的 AGENTS.md 才
+    // 把路径写出来标识来源。
+    const basename = displayPath || path.basename(absolutePath);
+    const header =
+      basename === "AGENTS.md"
+        ? "# AGENTS.md instructions"
+        : `# AGENTS.md instructions (${basename})`;
     sections.push(`${header}\n\n<INSTRUCTIONS>\n${text}\n</INSTRUCTIONS>`);
 
     sources.push({
