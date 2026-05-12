@@ -197,16 +197,15 @@ export async function POST(request: Request) {
   }
   // ---------------------------------------------------------------------
 
-  // A2 Phase 1 fire-and-forget：在主 workflow 启动**之前**触发上一段未处理的
-  // jsonl 抽取。
+  // A2 Phase 1 fire-and-forget：每次 POST 入口触发一次（不 await）。
   //
-  // 关键设计（对齐 codex）：
-  // - **不 await**：完全后台跑，主对话延时 0 影响
-  // - **抽的是上一轮**：当前请求的 user message 这时候还没写进 jsonl（fullSanitized
-  //   是这次刚 sanitize 的，写盘发生在 saveMessages 之后），extractor 看到的是
-  //   上一次 turn 的完整 transcript（user→assistant→tool→...→assistant）
-  // - **memoryEnabled=false 内部检查**：extractor 自己判，不在这里判，方便配置
-  //   未热加载时也能正确跳过
+  // 关键设计：
+  // - extractor 读 SQLite（`loadMessages`）而不是 jsonl —— jsonl 上 saveMessages
+  //   每次都把整段 deduped 历史 append 一遍（messages.ts:113-130），用 line offset
+  //   作 cursor 会跨 POST 重复抽。SQLite 是规范化快照，cursor = 已处理 message 数。
+  // - **POST 1 抽到 user 单边消息**：那时还没 asst 回复，extractor 只看到 user，
+  //   可以抽出身份/偏好类（自表达不依赖回复）。POST 2 抽新增 [asst1, user2]，
+  //   POST 3 抽 [asst2]，……每个 POST 增量推进 cursor，不重叠。
   // - **错误静默**：runPhase1ForThread 自身不抛，所有失败都收进 result.error
   void runPhase1ForThread({
     threadId: chatId,
@@ -223,7 +222,6 @@ export async function POST(request: Request) {
       }
     })
     .catch((error) => {
-      // 理论上不会进这里（extractor 内部已 try/catch），保险再兜一层
       console.warn(
         `[memory/phase1] chat=${chatId} unexpected throw:`,
         error instanceof Error ? error.message : error,

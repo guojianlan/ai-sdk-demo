@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import type { UIMessage } from "ai";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 
@@ -11,8 +12,8 @@ import {
   isMemoryEnabled,
   loadSettings,
 } from "@/lib/permissions";
+import { loadMessages } from "@/lib/persistence/messages";
 import { getThread } from "@/lib/persistence/store";
-import { getSessionFilePath } from "@/lib/persistence/paths";
 
 import { runPhase2Consolidation } from "./consolidator";
 import { PHASE1_EXTRACTOR_PROMPT } from "./extractor-prompt";
@@ -33,18 +34,26 @@ import {
  *
  * 流程（per-thread）：
  *   1. 读 settings → memoryEnabled=false 直接 return（不浪费 LLM 调用）
- *   2. 读 thread 元数据（拿 created_at 算 jsonl 路径 + workspaceRoot）
- *   3. 读 jsonl 增量（从 last_offset 之后）
- *   4. 没新行 → return（什么都不抽）
+ *   2. 读 thread 元数据（拿 workspaceRoot）
+ *   3. 从 SQLite `loadMessages` 拿 deduped 完整快照；只取 `last_offset` 之后的新消息
+ *   4. 没新消息 / 没 user|assistant 消息 → 推进 cursor 但不调 LLM
  *   5. 调 LLM（默认主模型，env MEMORY_EXTRACTOR_MODEL 可换便宜的）→ 解 JSON
  *   6. 写 raw_memories.md（追加）+ rollout_summaries/<id>-<slug>.md（覆盖；最新版本胜）
- *   7. 推进 last_offset
+ *   7. 推进 last_offset 到 `messages.length`
+ *
+ * 为什么从 SQLite 读不读 jsonl：
+ * - `saveMessages` 把整段 deduped 历史每次都 append 到 jsonl（messages.ts:113-130），
+ *   jsonl 设计上允许同 id 多次出现（"消费者按 id 取最后一次"），但 Phase 1 用 line
+ *   offset 没法做 cross-call dedup —— 上一轮的 user msg 在这一轮的 jsonl 尾部又
+ *   作为重复行出现，extractor 再抽一次。从 SQLite 读直接拿规范化的 UIMessage[]，
+ *   按 message position 当 cursor，每条消息只会被处理一次。
  *
  * 错误处理：任何步骤失败一律 warn + recordExtractionFailure（retry_count++）。
  * 触顶 EXTRACTION_RETRY_CAP（默认 3）后这条 thread 暂时摆烂，不再尝试。
  *
- * 调用方式：fire-and-forget 形态。chat route 收到请求后 `void runPhase1ForThread(...)`
- * 不 await；主对话不被它阻塞。
+ * 调用方式：fire-and-forget 形态。chat route 在 POST 入口 `void runPhase1ForThread(...)`
+ * 不 await；主对话不被它阻塞。Playwright 多 POST 串行场景下 cursor 单调递增，
+ * 不会出现 race（极端并发理论上仍可能，但生产 chat 都是顺序 POST）。
  */
 
 const phase1OutputSchema = z.object({
@@ -58,7 +67,7 @@ export type Phase1Result = {
   wroteRawMemory: boolean;
   /** 是否真的写了 rollout summary（no-op 时不写）。 */
   wroteSummary: boolean;
-  /** 实际处理了多少 jsonl 行（≥1 才会调 LLM）。 */
+  /** 实际处理了多少条 message（≥1 才会调 LLM）。 */
   newLinesProcessed: number;
   /** 失败时塞错误信息（success 时为 null）。 */
   error: string | null;
@@ -104,48 +113,28 @@ export async function runPhase1ForThread(args: {
     return result;
   }
 
-  // 4. 读 jsonl 增量
-  const jsonlPath = getSessionFilePath(args.threadId, thread.createdAt);
-  let raw: string;
-  try {
-    raw = await fs.readFile(jsonlPath, "utf-8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      // jsonl 还不存在（新 thread 第一次 POST 之前 jsonl 还没落盘）
-      return result;
-    }
-    result.error = `cannot read jsonl: ${error instanceof Error ? error.message : error}`;
-    recordExtractionFailure(args.threadId);
+  // 4. 从 SQLite 拿当前消息快照（规范化、按 position 升序、按 id dedup）
+  const allMessages = loadMessages(args.threadId);
+  if (allMessages.length <= state.lastOffset) {
+    // 没新消息可以抽
     return result;
   }
+  const newMessages = allMessages.slice(state.lastOffset);
+  result.newLinesProcessed = newMessages.length;
 
-  const allLines = raw.split("\n").filter((l) => l.trim().length > 0);
-  if (allLines.length <= state.lastOffset) {
-    // 没新行可以抽
-    return result;
-  }
-  const newLines = allLines.slice(state.lastOffset);
-  result.newLinesProcessed = newLines.length;
-
-  // 提前检查：新行里有真消息吗？只有 session_meta 这种元数据行 → 没东西可抽，
-  // 直接推进 offset 不调 LLM（省 token + 避免空 transcript LLM 不知所云）。
-  const hasMessages = newLines.some((line) => {
-    try {
-      const parsed = JSON.parse(line) as { type?: string };
-      return parsed.type === "message";
-    } catch {
-      return false;
-    }
-  });
-  if (!hasMessages) {
-    recordExtractionSuccess(args.threadId, allLines.length);
+  // 只有 system 通知（compaction notice 这种）→ 没真材料可抽，直接推进 cursor。
+  const hasUserOrAssistant = newMessages.some(
+    (m) => m.role === "user" || m.role === "assistant",
+  );
+  if (!hasUserOrAssistant) {
+    recordExtractionSuccess(args.threadId, allMessages.length);
     return result;
   }
 
   // 5. 渲染 transcript prompt + 调 LLM
   let transcript: string;
   try {
-    transcript = renderTranscript(newLines, {
+    transcript = renderTranscript(newMessages, {
       threadId: args.threadId,
       workspaceRoot: thread.workspaceRoot,
       workspaceName: thread.workspaceName ?? "",
@@ -204,8 +193,8 @@ export async function runPhase1ForThread(args: {
     return result;
   }
 
-  // 7. 推进游标
-  recordExtractionSuccess(args.threadId, allLines.length);
+  // 7. 推进游标到当前 message 总数
+  recordExtractionSuccess(args.threadId, allMessages.length);
 
   // 8. 写了 raw memory → fire-and-forget 触发 Phase 2 整合
   //    Phase 2 内部会做 hash 检查，如果 raw_memories.md 实际内容没变（极少见
@@ -245,17 +234,13 @@ function chooseExtractorModel(): LanguageModel {
 }
 
 /**
- * 把 jsonl 行转成 LLM 看得懂的 transcript 段落。
+ * 把 UIMessage 列表渲染成 LLM 看得懂的 transcript 段落。
  *
- * 我们的 jsonl line shape（详见 lib/persistence/jsonl.ts）：
- *   - { type: "session_meta", ... }
- *   - { type: "message", payload: UIMessage }   ← 主要素材
- *
- * UIMessage 的 parts 数组又包含 text / tool 等 part；这里降维成纯文本 transcript，
- * 让 LLM 不被 schema 干扰。tool input/output 简化成 1 行 preview，省 token。
+ * UIMessage 的 parts 数组包含 text / tool / reasoning 等 part；这里降维成纯文本
+ * transcript，让 LLM 不被 schema 干扰。tool input/output 简化成 1 行 preview，省 token。
  */
 function renderTranscript(
-  lines: string[],
+  messages: UIMessage[],
   meta: { threadId: string; workspaceRoot: string; workspaceName: string },
 ): string {
   const head = [
@@ -265,39 +250,29 @@ function renderTranscript(
     "",
     "---",
     "",
-    "Transcript (most recent first NOT applied — listed in chronological order):",
+    "Transcript (chronological order):",
     "",
   ].join("\n");
 
   const body: string[] = [];
-  for (const line of lines) {
-    let parsed: { type?: string; payload?: unknown };
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue; // 损坏行跳过
-    }
-    if (parsed.type === "session_meta") {
-      // 元数据行（没什么有用内容给 extractor 看）
-      continue;
-    }
-    if (parsed.type !== "message") continue;
-    const m = parsed.payload as
-      | {
-          role?: string;
-          parts?: Array<{ type?: string; text?: string; input?: unknown; output?: unknown }>;
-        }
-      | undefined;
-    if (!m?.role || !Array.isArray(m.parts)) continue;
+  for (const m of messages) {
+    if (!m.role || !Array.isArray(m.parts)) continue;
     body.push(`### ${m.role}`);
-    for (const p of m.parts) {
+    for (const p of m.parts as Array<{
+      type?: string;
+      text?: string;
+      input?: unknown;
+      output?: unknown;
+    }>) {
       if (p.type === "text" && typeof p.text === "string") {
         body.push(p.text.slice(0, 4000)); // 单条 text 上限
       } else if (typeof p.type === "string" && p.type.startsWith("tool-")) {
         const toolName = p.type.slice("tool-".length);
         const inputPreview = JSON.stringify(p.input ?? null).slice(0, 200);
         const outputPreview = JSON.stringify(p.output ?? null).slice(0, 200);
-        body.push(`(tool ${toolName}) input=${inputPreview} output=${outputPreview}`);
+        body.push(
+          `(tool ${toolName}) input=${inputPreview} output=${outputPreview}`,
+        );
       }
       // 其它 part type（reasoning / data-* 等）跳过
     }
