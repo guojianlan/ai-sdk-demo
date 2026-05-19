@@ -22,7 +22,7 @@
 | **P3-R** | **生产级重构** | ✅ done | 6 项全部完成；两条路由当时各压到 90/63 行（当天即删掉 experimental，主路由 90 行保留）；全 app 零 `as any/never/ToolSet`；build 通过 |
 | **P3-b** | Message 持久化 + resume streams | ✅ done | SQLite 存消息 + 进程内 active-stream Map 做 resume；遇到两个坑：chatInstanceId 不能做 reconnect URL（含斜杠）、useChat 的 resume effect 只在 resume prop 翻转时跑 |
 | **P3-c** | Interactive tools（交互卡片抽象） | ✅ done | `approvedTool` / `interactiveTool` 两个 helper + `ask_question` / `ask_choice` / `show_reference` 三张卡 + CLARIFICATION GATE prompt 层 + markdown 渲染；顺手发现 `ask_choice` 的 recommendedId 标记让 UX 好很多 |
-| **P4-a** | Testing + 模拟模型 | ⬜ pending | — |
+| **P4-a** | Testing + 模拟模型 | ✅ done | vitest 接入；workspaces 路径安全 + system-prompt 快照 + session-primer 向下收集 三组单测；Playwright e2e memory 流水线；详见 [docs/05-12.md](./05-12.md) |
 | **P4-b** | Context compaction | ✅ done | SQLite 存摘要 + LLM 压缩 + token 阈值自动触发 + 作为新 prompt layer 注入 + 压缩通知作为 role=system UIMessage 在 UI 上渲染；踩过两个坑：(1) estimateTokens 先做了 tool output 截断严重低估 token 数；(2) splitForCompaction 的 split 点必须向前回退到 user message，否则 kept 以 assistant 起头 → LLM finish=other 空转 |
 | **P5** | OS 沙箱 + 持久化 + open-agents 对齐 | ✅ done | ASRT sandbox hook + SQLite 双写 JSONL；详见 commit `09937a3` |
 | **P6** | 权限三层防御 | ✅ done | ACL（settings.json rules）+ PermissionMode 三档（default/acceptEdits/bypassPermissions）+ 工具 needsApproval 三层叠加；详见 [docs/05-09.md](./05-09.md) |
@@ -57,6 +57,7 @@
 | Message 持久化 + resume streams（P3-b） | [lib/chat-store.ts](../lib/chat-store.ts), [lib/active-streams.ts](../lib/active-streams.ts), [app/api/chat/history/route.ts](../app/api/chat/history/route.ts), [app/api/chat/[chatId]/stream/route.ts](../app/api/chat/[chatId]/stream/route.ts), [app/api/chat/route.ts](../app/api/chat/route.ts), [app/page.tsx](../app/page.tsx) | `createAgentUIStreamResponse` 的 `onFinish` + `originalMessages`（给响应消息分配稳定 id）；`consumeSseStream` 把 SSE 流 tee 一份给自家 buffer，不阻塞主响应；进程内 `Map<chatId, {chunks, ended, listeners}>` 做 replay + live 订阅；`DefaultChatTransport.reconnectToStream` 默认打 `${api}/${chatId}/stream`，用 `prepareReconnectToStreamRequest` 重写 URL 避开含斜杠的 chatInstanceId；`useChat({ resume })` 的内部 effect 只在 `resume` prop 翻转时跑一次——切回已存在的 session 要**手动** `resumeStream()` |
 | Interactive tools（P3-c） | [lib/tool-helpers.ts](../lib/tool-helpers.ts), [lib/interactive-tools.ts](../lib/interactive-tools.ts), [app/_components/tool-card/interactive-cards.tsx](../app/_components/tool-card/interactive-cards.tsx), [app/_components/AssistantMarkdown.tsx](../app/_components/AssistantMarkdown.tsx), [app/api/chat/agent-config.ts](../app/api/chat/agent-config.ts) | **client-side tool execution**：`tool({ inputSchema, outputSchema })` 不给 `execute` → AI SDK 停在 input-available 等客户端 `addToolOutput` 回灌；`approvedTool` / `interactiveTool` 两个 factory helper 封装裸 `tool()` 的两种用法（server + approval vs client + 无 execute）；UI 侧 registry dispatch by toolName；prompt 层 **CLARIFICATION GATE**（self-check / vagueness / precondition / confidence / shape patterns）把"默认兜底追问"写进 developer rules；`ask_choice` 的 `recommendedId` + `recommendationReason` 是个小但重要的 UX 细节（用户能看到 LLM 怎么想 + 自己还能覆盖）；markdown 用 `react-markdown` + `remark-gfm` + 自己写 Components override（不用 typography plugin 因为 wireframe 美学 override 更轻） |
 | Context compaction（P4-b） | [lib/compaction.ts](../lib/compaction.ts), [lib/chat-store.ts](../lib/chat-store.ts), [lib/prompt-layers.ts](../lib/prompt-layers.ts), [lib/chat-agent/system-prompt.ts](../lib/chat-agent/system-prompt.ts), [app/api/chat/route.ts](../app/api/chat/route.ts), [app/_components/MessageBubble.tsx](../app/_components/MessageBubble.tsx) | Token 阈值触发的 handoff 摘要：`generateText` 单独一次 LLM 调用把老消息压成 USER'S REQUEST / COMPLETED / DECISIONS / PREFERENCES / PENDING / OPEN QUESTIONS 六段式摘要；`session_summaries` SQLite 表持久化 + `compacted_count` 记录"已折叠多少条"；摘要作为 `# Conversation summary so far` 新 prompt layer 注入 system prompt（不是 message history）；`role=system` 的 UIMessage + sentinel 前缀做 "compaction notice" UI 标记，前端按虚线徽章渲染；agent view 过滤 system role 消息以免污染真实 system prompt |
+| Testing + 模拟模型（P4-a） | [tests/workspaces.test.ts](../tests/workspaces.test.ts), [tests/system-prompt.test.ts](../tests/system-prompt.test.ts), [tests/session-primer.test.ts](../tests/session-primer.test.ts), [e2e/memory.spec.ts](../e2e/memory.spec.ts), [tests/setup.ts](../tests/setup.ts), [package.json](../package.json) | vitest 接入 + `tests/setup.ts` 在模块加载前塞 placeholder API key 让 env.ts 能 import；3 组单测覆盖纯函数与 fs 边界（workspaces 路径安全 9 例、system-prompt 快照 4 例、session-primer 向下收集 10 例 = 23/23 全绿）；session-primer 用 `fs.mkdtemp` tmp 目录 fixture 而不引入 mock-fs，beforeEach/afterEach 自动 cleanup；Playwright `test:e2e` 跑真 LLM 端到端跑通 memory 抽取 → 整合流水线（隔离 storage dir） |
 
 ---
 
@@ -324,7 +325,7 @@ npm run dev:all
 
 ### P4-a：Testing + 模拟模型
 
-**Status**: ⬜ pending
+**Status**: ✅ done（2026-05-18）
 
 **价值**：给自定义 tool、primer、prompt 装配写测试；对 prompt 做回归。
 
@@ -334,11 +335,11 @@ npm run dev:all
 - 集成进 Vitest / Node test runner
 
 **具体任务**：
-- [ ] 给 `lib/workspaces.ts` 的 `resolveWorkspacePath` / 搜索 glob 逻辑加单测（纯函数，最容易）
-- [ ] 给 `lib/session-primer.ts` 的向下收集逻辑加单测（需要 fs 测试工具）
-- [ ] 给 prompt 装配加快照测试（`assemblePromptLayers(...)` 输出固定结构）
+- [x] 给 `lib/workspaces.ts` 的 `resolveWorkspacePath` / 搜索 glob 逻辑加单测（纯函数，最容易）
+- [x] 给 `lib/session-primer.ts` 的向下收集逻辑加单测（tmp 目录 fixture，不引入 mock-fs）
+- [x] 给 prompt 装配加快照测试（`buildSystemPrompt` 输出固定结构）
 
-**Done 标准**：`npm test` 跑起来，覆盖核心 lib。
+**Done 标准**：`npm test` 跑起来，覆盖核心 lib。✓ vitest 23/23 全绿（workspaces 9 + system-prompt 4 + session-primer 10）；详见 [docs/05-12.md](./05-12.md)。
 
 **预估**：1-2 天。
 
