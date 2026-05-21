@@ -56,6 +56,41 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
  * - `disableBypassPermissionsMode: "disable"`: 任意层级写了就**永久禁用** bypass，
  *    项目级也覆盖不掉。是组织级 kill switch。
  */
+/**
+ * Hook 声明 schema（P9-c）—— settings.json 写的"开关哪些 hook"。
+ *
+ * **重要安全约束**：`name` 引用内部注册表（`lib/hooks/settings-loader.ts` 的
+ * `HOOK_FACTORIES`），settings.json **不能定义任意 JS**。这跟 Claude Code 的
+ * "外部 command/prompt hook"是两条路：那条是 P9-d 的事，本文件只管 in-process
+ * named hook 的声明式开关。
+ *
+ * `matcher` 是字符串正则，覆盖 hook 内部的默认 matcher（如 dotenv-blocklist 默
+ * 认 `^(write|edit|read)$`）。不传 → 用 factory 默认。
+ */
+export const hookDeclarationSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe(
+      "Name of a hook registered in lib/hooks/settings-loader.ts HOOK_FACTORIES.",
+    ),
+  matcher: z
+    .string()
+    .optional()
+    .describe(
+      "Regex string overriding the hook's default tool-name matcher. Tool events only.",
+    ),
+});
+export type HookDeclaration = z.infer<typeof hookDeclarationSchema>;
+
+export const hooksConfigSchema = z.object({
+  PreToolUse: z.array(hookDeclarationSchema).optional(),
+  PostToolUse: z.array(hookDeclarationSchema).optional(),
+  UserPromptSubmit: z.array(hookDeclarationSchema).optional(),
+  SessionStart: z.array(hookDeclarationSchema).optional(),
+});
+export type HooksConfig = z.infer<typeof hooksConfigSchema>;
+
 export const settingsSchema = z.object({
   rules: z.array(permissionRuleSchema).default([]),
   allowBypassMode: z.boolean().optional(),
@@ -71,6 +106,13 @@ export const settingsSchema = z.object({
    * 跟 rules / bypass 字段一样走层级合并（closer-to-cwd 覆盖外层）。
    */
   memoryEnabled: z.boolean().optional(),
+  /**
+   * Hook 声明（P9-c）。事件分组，每条 `{ matcher?, name }`。
+   * `name` 必须在 `HOOK_FACTORIES` 已注册；未知 name 在 loader 里 warn+skip。
+   *
+   * 合并策略跟 `rules` 类似：closer-to-cwd 在前（事件分组分别拼接）。
+   */
+  hooks: hooksConfigSchema.optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

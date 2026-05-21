@@ -74,6 +74,14 @@ export type ChatAgentConfig<
    * 不传或空数组 = 没启用 skill 系统，相关 prompt 段落跳过。
    */
   skills?: SkillMetadata[] | null;
+  /**
+   * P9-c：本轮 UserPromptSubmit / SessionStart hook 收集到的
+   * `additionalContexts` + `systemMessages`。route 在 POST 入口跑完 hook 之后
+   * 把这些字符串穿过 workflow 传到这里 —— builder 调 buildSystemPrompt 时
+   * 作为 `hookContexts` 注入 system prompt 末尾。
+   * 不传或空数组 = 这层不出现。
+   */
+  hookContexts?: string[] | null;
 };
 
 export function createChatAgent<
@@ -126,6 +134,7 @@ export function createChatAgent<
         skills: config.skills ?? null,
         conversationSummary: config.conversationSummary ?? null,
         globalMemory,
+        hookContexts: config.hookContexts ?? null,
       });
 
       const baseContext = config.buildExperimentalContext({

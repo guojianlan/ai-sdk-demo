@@ -200,6 +200,12 @@ export const projectEngineerCallOptionsSchema = z.object({
    * 这些 mutating tool。
    */
   planMode: z.boolean().default(false),
+  /**
+   * 当前会话 chatId —— 仅用于 hook payload 的 sessionId 字段透传（log 行能带上
+   * "哪个 chat 调的 tool"）。spawn_agent 把它带入 subagent 的 experimental_context，
+   * 子 agent 的 hook 也用同一个 chatId，方便日志串起来。可选；缺失不影响行为。
+   */
+  chatId: z.string().min(1).optional(),
 });
 
 /**
@@ -239,6 +245,8 @@ export function createProjectEngineerAgent(params: {
   conversationSummary?: string | null;
   /** 当前会话可用 skill 列表（只 metadata，body 按需读盘）。 */
   skills?: SkillMetadata[] | null;
+  /** P9-c：UserPromptSubmit/SessionStart hook 收集的额外 contexts。 */
+  hookContexts?: string[] | null;
 }) {
   return createChatAgent({
     model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
@@ -257,10 +265,14 @@ export function createProjectEngineerAgent(params: {
       shellApprovalPolicy: options.shellApprovalPolicy,
       permissionMode: options.permissionMode,
       planMode: options.planMode,
+      // P9 后续：把 chatId 落进 experimental_context，spawn_agent 透传给子 agent
+      // 当 hook sessionId 使。可选字段，缺了不影响行为。
+      __chatId: options.chatId,
     }),
     tools: params.tools,
     onFinish: params.onFinish,
     conversationSummary: params.conversationSummary,
     skills: params.skills,
+    hookContexts: params.hookContexts,
   });
 }

@@ -6,6 +6,7 @@ import { env } from "@/lib/env";
 
 import {
   EMPTY_SETTINGS,
+  type HooksConfig,
   type Settings,
   settingsSchema,
 } from "./types";
@@ -135,7 +136,40 @@ function mergeSettings(base: Settings, override: Settings): Settings {
     // 没写（undefined）就继承 base。最终 undefined 由消费层（isMemoryEnabled）按
     // 默认 true 处理。漏写这一行 → user-global 设的 false 在合并时被丢，bug。
     memoryEnabled: override.memoryEnabled ?? base.memoryEnabled,
+    // hooks：按事件分组分别拼接，跟 rules 一样 closer-to-cwd 在前。
+    // 任一层没写整个 hooks 字段就直接传另一层；两层都写时按事件分别 concat。
+    hooks: mergeHooksConfig(base.hooks, override.hooks),
   };
+}
+
+/**
+ * 合并两层 `hooks` 配置：override（更具体）在前、base（更外层）在后。
+ * 任一层为 undefined 就直接返回另一层（避免造空对象增噪音）。
+ *
+ * 单个事件桶用数组拼接：同一个 hook name 在两层都写了也都会被注册，loader 之后
+ * 会去掉重复（同一个 factory 实例化两次没意义，但行为上 idempotent）。
+ */
+function mergeHooksConfig(
+  base: HooksConfig | undefined,
+  override: HooksConfig | undefined,
+): HooksConfig | undefined {
+  if (!base) return override;
+  if (!override) return base;
+  const events: Array<keyof HooksConfig> = [
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "SessionStart",
+  ];
+  const out: HooksConfig = {};
+  for (const event of events) {
+    const o = override[event];
+    const b = base[event];
+    if (o && b) out[event] = [...o, ...b];
+    else if (o) out[event] = o;
+    else if (b) out[event] = b;
+  }
+  return out;
 }
 
 /**

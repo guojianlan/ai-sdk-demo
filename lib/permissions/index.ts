@@ -5,6 +5,10 @@
 
 export {
   EMPTY_SETTINGS,
+  type HookDeclaration,
+  type HooksConfig,
+  hookDeclarationSchema,
+  hooksConfigSchema,
   type PermissionBehavior,
   type PermissionRule,
   type Settings,

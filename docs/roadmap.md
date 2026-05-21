@@ -28,6 +28,7 @@
 | **P6** | 权限三层防御 | ✅ done | ACL（settings.json rules）+ PermissionMode 三档（default/acceptEdits/bypassPermissions）+ 工具 needsApproval 三层叠加；详见 [docs/05-09.md](./05-09.md) |
 | **P7** | 高级 agent 行为模式 | ✅ done | Plan mode（codex 风格 + ProposedPlanCard）+ implementation_summary 卡 + spawn_agent v3（递归 + 深度限制 + UX）+ todo_write→update_plan 重命名简化；详见 [docs/05-09.md](./05-09.md) |
 | **P8** | Memory 跨对话长期记忆 | ✅ done | A1 注入 MEMORY.md + A2 Phase 1 抽取（fire-and-forget）+ A3 Phase 2 整合（hash skip）+ A4 memory_write tool + 项目级 `memoryEnabled` 总开关；详见 [docs/05-09.md](./05-09.md) |
+| **P9** | Hook 系统 | ✅ done (首版) | 抄 Claude Code 的 hook 事件模型（PreToolUse / PostToolUse / UserPromptSubmit / SessionStart）+ codex 的 `additional_contexts` 注入 idea；首版用 TS 程序化注册而非外部 command，落进现有 settings.json + 工具/请求管线。P9-d 外部 command/prompt 留 parked |
 
 **状态图例**：⬜ `pending` · 🟡 `in-progress` · ✅ `done` · ⏸️ `paused` · ❌ `dropped`
 
@@ -405,6 +406,76 @@ npm run dev:all
 - 某项做完后，回来看看后续是否要调整 —— 有时完成 A 会让 B 变得更简单或更不必要
 - AI SDK 有新版本 / 新 feature，评估是否值得插队
 - 学到新的 codex / Claude Code 设计（比如某个 prompt 技巧、context 策略），评估是否值得做实验
+
+---
+
+## P9 —— Hook 系统
+
+**Status**: ⬜ pending · **依赖**：P6（settings.json 链路）+ P1-a（工具 needsApproval / approval 流水线）
+
+**价值**：Claude Code 和 codex 的 hook 系统是把"事件驱动可扩展"焊到 agent 流水线上的实践——你可以在 tool 跑前/跑后、用户提交 prompt、session 启动等关键点挂任意逻辑：拦截、改写输入、注入开发者消息、记录、出错时上报。
+做完后，本仓库的几条横切关注点（日志、`.env` 黑名单、`additional_contexts` 注入、敏感操作 deny 兜底）从"散落在工具实现里 + 路由里"变成"统一在 hook 注册表里声明"。
+
+**学到的新概念**：
+- Claude Code 的 hook 事件枚举与 JSON I/O 契约（stdin payload + stdout 控制返回）
+- codex 的 `additional_contexts: Vec<String>` —— hook 返回的字符串作为 developer message 注入会话历史
+- Matcher（正则/glob）做事件粒度筛选（如 `Write|Edit|Bash`、`mcp__.*`、`*`）
+- 控制返回值的三档：`allow` / `deny`（带 reason）/ `ask`，以及 `updatedInput` 改写工具入参 + `systemMessage` 注会话
+
+**技术路线决策**：**首版不实现 command/外部进程 hook**，只做 **TS 程序化注册（in-process）**。
+理由：本仓库是 Next.js 单进程，spawn 子进程 hook 既增加复杂度（IPC、超时、stderr 解析）又脱离学习目标（学的是事件模型，不是 IPC 工程）。Schema 直接抄 Claude Code 的 JSON 契约，外部 command/prompt handler 留给 P9-d 作为延伸。
+
+### P9-a：核心 runtime + 事件类型 ✅ done (2026-05-20)
+
+**具体任务**：
+- [x] `lib/hooks/types.ts`：定义 `HookEvent` 联合（`PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `SessionStart`）+ 各自的 `HookPayload` + 共同的 `HookResult`（`{ decision?: "allow"|"deny"|"ask"; reason?: string; updatedInput?: unknown; additionalContexts?: string[]; systemMessage?: string }`）
+- [x] `lib/hooks/runtime.ts`：`HookRegistry` + `runHooks(event, payload, ctx)`；matcher 用字符串正则；失败/超时 hook 不阻塞主流程（policy hook 除外，`decision: "deny"` 会中止）
+- [x] `lib/hooks/define.ts`：`defineHook({ event, matcher?, name, handler })` 工厂
+
+**Done 标准**：`tests/hooks-runtime.test.ts` 6 例跑通：matcher 命中/deny 短路+deniedBy/优先级 last-write-wins/异常隔离/超时隔离/`additionalContexts` + `systemMessages` 合并 + `ask` 不短路。
+
+### P9-b：接入 PreToolUse + PostToolUse ✅ done (2026-05-20)
+
+**具体任务**：
+- [x] `lib/hooks/wrap-toolset.ts` 在 tool execute 外包一层 hook 切点（不动 builder，由 workflow 显式调用 `wrapToolsetWithHooks`）
+- [x] PreToolUse 命中 `deny` → 用 `toolErr(reason)` 返回，不调底层 execute；PostToolUse 同步跳过（已被 deny）
+- [x] PreToolUse 返回 `updatedInput` → 透传给 execute
+- [x] PostToolUse 永远跑：execute 抛错时把异常拍成 `{ok:false,error}` 形态喂 hook（统一切点），跑完再 re-throw
+- [ ] PostToolUse `additionalContexts` 注入开发者消息 —— **延后**：runtime 已经聚合好 `additionalContexts`，但要落到 UIMessage 流跨 step 注入需要跟 P9-c 的 UserPromptSubmit 注入路径合并设计，先卡在 runtime 拿到
+
+**首发内置 hook**：
+- [x] `dotenvBlocklistHook` —— matcher `^(write|edit|read)$`，命中 `.env*` 路径 → `decision: "deny"`。**默认 NOT 注册**进 `defaultHookRegistry`（避免绕过现有 `env.dotEnvFileApproval` approval 卡），等 P9-c settings.json 接好再声明式开关
+- [x] `toolLoggingHook` —— PostToolUse 单行 stdout 日志 `[hooks] post tool=… ok=… duration=…ms`（model name 等 P9-c 把模型穿进 ctx 再补）。**默认注册**
+
+**Done 标准**：
+- `tests/hooks-wrap-toolset.test.ts` 5 例覆盖：deny 短路 + 不调 execute + PostToolUse 跳过、`updatedInput` 透传、execute throw 时 PostToolUse 仍拿到 `{ok:false}` 且原异常被 re-throw、interactive tool（无 execute）原样透传、PostToolUse payload 字段齐全
+- `tests/hooks-builtin.test.ts` 6 例覆盖：dotenv 命中四种 .env 路径 + 非 .env 放过 + matcher 限定工具名 + input 无 relativePath 放过、tool-logging 单行格式 + ok=false 分支
+- e2e（`write ./.env` → deny + 日志行）等 P9-c 把 settings 开关 dotenv hook 接好后再补，避免和现有 approval UX 冲突
+
+### P9-c：UserPromptSubmit + SessionStart + settings.json 声明 ✅ done (2026-05-20)
+
+**具体任务**：
+- [x] UserPromptSubmit hook：在 `app/api/chat/route.ts` POST 入口，sanitize 之后、`saveMessages` 之前跑；`decision: "deny"` → 直接 403；`additionalContexts` + `systemMessage` 累积成 `hookContexts: string[]` 穿过 workflow → `createProjectEngineerAgent` → `buildSystemPrompt`，作为新段落 `# Hook context` 注在 system prompt 末尾
+- [x] SessionStart hook：用 `loadMessages(chatId).length === 0` 判首条；deny → 403；contexts 跟 UserPromptSubmit 走同一条收集通道
+- [x] `lib/hooks/settings-loader.ts`：从合并后的 `Settings.hooks` 还原 `HookRegistry`；`name` 必须命中内部 `HOOK_FACTORIES`（dotenv-blocklist / tool-logging），**settings.json 不能定义任意 JS**；未知 name / 事件桶错位 → warn+skip
+- [x] `lib/permissions/types.ts` + `lib/permissions/settings.ts`：扩 `settingsSchema` 加 `hooks`，并按事件分组合并（closer-to-cwd 在前，跟 `rules` 同语义）
+
+**Done 标准**：
+- `tests/hooks-settings.test.ts` 8 例覆盖：known-name 注册成功并 deny `.env`、unknown-name warn+skip、事件桶错位 warn+skip、空 settings 不抛、`listKnownHookNames` 暴露内置 hook 清单、tmp `.agents/settings.json` fixture 三态（开 / 没文件 / 空 hooks）端到端跑通"开 deny / 关放行"
+- `workflow/chat.ts` 用同一套 `default + settings` 组合 registry 包 toolset；route POST 也用同一套跑 UserPromptSubmit / SessionStart，行为口径统一
+- 现成 vitest 48/48 通过；lint clean
+
+### P9-d（延伸，不在首版）：外部 command/prompt handler
+
+**Status**: ⬜ parked · 触发条件：首版用稳了、确实有"非代码人写 hook"的场景再做
+
+- 抄 Claude Code 的 stdin/JSON 协议
+- spawn 子进程、5s 超时、stderr 收集
+- `type: "prompt"` 用 `generateText` 跑 LLM hook
+
+---
+
+**整 P9 预估**：3-4 天（P9-a + P9-b 1.5-2 天，P9-c 1-1.5 天）
 
 ---
 

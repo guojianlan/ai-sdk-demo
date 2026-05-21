@@ -127,4 +127,17 @@ describe("buildSystemPrompt", () => {
     });
     expect(normalize(prompt, fixtureRoot)).toMatchSnapshot();
   });
+
+  it("可选层：传入 hookContexts 时插 Hook context 段并忽略空白项", async () => {
+    const prompt = await buildSystemPrompt({
+      persona: "You are a project engineer.",
+      developerRules: "## Rules\n\n- Be concise.",
+      workspaceRoot: fixtureRoot,
+      hookContexts: ["remember foo", "  ", "system says bar"],
+    });
+
+    expect(normalize(prompt, fixtureRoot)).toContain(
+      ["# Hook context", "", "- remember foo", "- system says bar"].join("\n"),
+    );
+  });
 });

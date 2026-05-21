@@ -4,9 +4,17 @@ import { z } from "zod";
 import { instrumentModel } from "@/lib/devtools";
 import { gateway, gatewayModelId } from "@/lib/gateway";
 import {
+  buildHookRegistryFromSettings,
+  copyHooksInto,
+  defaultHookRegistry,
+  HookRegistry,
+  wrapToolsetWithHooks,
+} from "@/lib/hooks";
+import {
   DEFAULT_PERMISSION_MODE,
+  loadSettings,
   type PermissionMode,
-} from "@/lib/permissions/mode";
+} from "@/lib/permissions";
 import { connectSandbox } from "@/lib/sandbox";
 import { editTool, writeTool } from "@/lib/tools/write";
 import { globTool } from "@/lib/tools/glob";
@@ -95,6 +103,8 @@ const subAgentCallOptionsSchema = z.object({
   shellApprovalPolicy: z.string().optional(),
   /** 当前 subagent 深度（spawn_agent execute 计算后传入）。 */
   depth: z.number().int().min(1).default(1),
+  /** 父 chatId 透传 —— 仅用于 hook payload 的 sessionId，递归 spawn 时也带下去。 */
+  chatId: z.string().min(1).optional(),
 });
 
 /**
@@ -115,15 +125,37 @@ export async function runSubAgent(args: {
   shellApprovalPolicy?: ShellApprovalPolicy;
   depth: number;
   abortSignal?: AbortSignal;
+  /**
+   * 父 agent 的 chatId，仅用作 hook payload 的 sessionId 字段；不传也行（log 行
+   * 会少一段标识，但行为不受影响）。一般通过父 `experimental_context.__chatId`
+   * 透传，spawn-agent execute 显式传过来。
+   */
+  parentChatId?: string;
 }) {
   const tools = await buildSubAgentToolset();
+
+  // 子 agent 也走 hook —— 跟主 workflow 同一套口径：
+  //   default registry（含 toolLogging）+ settings-derived（如开启的 dotenv-blocklist）
+  // 不挂 hook 的话 dotenv blocklist 在 child 内部失效、log 行漏掉 child tool call，
+  // 安全护栏会出现"父被拦、child 偷偷写"的口径割裂。
+  const subagentSettings = loadSettings(args.workspaceRoot);
+  const subagentHookRegistry = new HookRegistry();
+  copyHooksInto(subagentHookRegistry, defaultHookRegistry);
+  copyHooksInto(
+    subagentHookRegistry,
+    buildHookRegistryFromSettings(subagentSettings),
+  );
+  const hookedTools = wrapToolsetWithHooks(tools, subagentHookRegistry, {
+    sessionId: args.parentChatId,
+  });
+
   const subAgent = new ToolLoopAgent({
     model: instrumentModel(gateway.chatModel(gatewayModelId)),
     instructions: subAgentPersona,
     // 100 步对齐 explorer 上限；子 agent 跑越久越费 token，但偶尔大任务确实需要。
     stopWhen: stepCountIs(100),
     callOptionsSchema: subAgentCallOptionsSchema,
-    tools,
+    tools: hookedTools,
     prepareCall: async ({ options, ...settings }) => {
       const sandbox = await connectSandbox({
         type: "local",
@@ -143,6 +175,9 @@ export async function runSubAgent(args: {
           __subagent: true,
           // 当前子 agent 的深度。spawn_agent execute 读这个判断是否还能再 spawn。
           __subagentDepth: options.depth,
+          // 把父 chatId 继续往下传 —— 递归 spawn 出的孙 agent 的 hook 也能用同一个
+          // sessionId 串日志；缺失就不带。
+          __chatId: options.chatId,
         },
       };
     },
@@ -156,6 +191,7 @@ export async function runSubAgent(args: {
       permissionMode: args.permissionMode,
       shellApprovalPolicy: args.shellApprovalPolicy,
       depth: args.depth,
+      chatId: args.parentChatId,
     },
     abortSignal: args.abortSignal,
   });

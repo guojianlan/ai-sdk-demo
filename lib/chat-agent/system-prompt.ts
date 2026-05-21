@@ -25,6 +25,13 @@ export async function buildSystemPrompt(input: {
   conversationSummary?: string | null;
   /** 跨对话长期记忆（A1）。null = 没启用 / 没文件。 */
   globalMemory?: LoadedMemory | null;
+  /**
+   * P9-c：UserPromptSubmit / SessionStart hook 返回的 `additionalContexts`
+   * 和 `systemMessage` 合在一起的字符串数组。每条作为独立段落 append 到
+   * 最终 prompt 末尾（一个 `# Hook context` section 内）。
+   * 不传或空数组 → 这层不出现。
+   */
+  hookContexts?: string[] | null;
 }): Promise<string> {
   const primer = await buildSessionPrimer({
     workspaceRoot: input.workspaceRoot,
@@ -43,7 +50,7 @@ export async function buildSystemPrompt(input: {
   const skillsSection = buildSkillsSection(input.skills ?? null);
   const memorySection = buildGlobalMemorySection(input.globalMemory ?? null);
 
-  return assemblePromptLayers({
+  const base = assemblePromptLayers({
     persona: input.persona,
     developerRules: input.developerRules,
     environmentContext: primer.environmentContext,
@@ -52,6 +59,24 @@ export async function buildSystemPrompt(input: {
     availableSkills: skillsSection,
     conversationSummary: summarySection,
   });
+
+  const hookSection = buildHookContextSection(input.hookContexts ?? null);
+  if (!hookSection) return base;
+  return `${base}\n\n${hookSection}`;
+}
+
+/**
+ * 把 P9-c hook 收集到的 contexts / systemMessages 渲染成 system prompt 段落。
+ *
+ * 每条作为独立 `- ...` 列表项放在 `# Hook context` 下面 —— 这是个临时层（每次
+ * 请求新算），不进 prompt-layers 是有意的：prompt-layers 是稳定 7 层，hook 层
+ * 跟随请求生命周期波动，让它单独存在更清楚。
+ */
+function buildHookContextSection(contexts: string[] | null): string | null {
+  if (!contexts || contexts.length === 0) return null;
+  const cleaned = contexts.map((c) => c.trim()).filter((c) => c.length > 0);
+  if (cleaned.length === 0) return null;
+  return ["# Hook context", "", ...cleaned.map((c) => `- ${c}`)].join("\n");
 }
 
 /**

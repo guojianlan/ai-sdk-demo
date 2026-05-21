@@ -122,11 +122,13 @@ export const spawnAgentTool = approvedTool({
       permissionMode?: PermissionMode;
       shellApprovalPolicy?: ShellApprovalPolicy;
       __subagentDepth?: number;
+      __chatId?: string;
     };
     const permissionMode = ctx?.permissionMode ?? DEFAULT_PERMISSION_MODE;
     const shellApprovalPolicy = normalizeShellApprovalPolicy(
       ctx?.shellApprovalPolicy ?? DEFAULT_SHELL_APPROVAL_POLICY,
     );
+    const parentChatId = ctx?.__chatId;
 
     // 深度检查：父 agent 自身不算 subagent（depth=0），spawn 出的子 agent 是 depth=1，
     // 子 agent 再 spawn 出的孙是 depth=2，以此类推。child = parent + 1。
@@ -150,6 +152,7 @@ export const spawnAgentTool = approvedTool({
         shellApprovalPolicy,
         depth: childDepth,
         abortSignal,
+        parentChatId,
       });
 
       const toolBreakdown = aggregateToolCalls(

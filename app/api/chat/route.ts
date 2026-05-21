@@ -19,11 +19,20 @@ import { sanitizeChatUIMessages } from "@/lib/chat/sanitize-messages";
 import {
   compareAndSetActiveStreamId,
   getActiveStreamId,
+  loadMessages,
   loadSummary,
   saveMessages,
   saveSummary,
   upsertThread,
 } from "@/lib/persistence";
+import {
+  buildHookRegistryFromSettings,
+  copyHooksInto,
+  defaultHookRegistry,
+  HookRegistry,
+  runHooks,
+} from "@/lib/hooks";
+import { loadSettings } from "@/lib/permissions";
 import {
   buildCompactionNotice,
   compactMessages,
@@ -123,6 +132,77 @@ export async function POST(request: Request) {
   }
 
   const fullSanitized = sanitizeChatUIMessages(body.messages ?? []);
+
+  // --- P9-c: UserPromptSubmit + SessionStart hook ----------------------
+  //
+  // 在 saveMessages 之前判断"是不是 chat 的第一条 user 消息"——一旦 saveMessages
+  // 跑完，DB 里就有了，无法回头判定。SessionStart 触发条件 = DB 此前为空 + 本轮
+  // 至少有一条 user 消息（典型首条请求）。
+  //
+  // 跑 hook 用一个**组合 registry**：defaultHookRegistry（日志）+ settings-derived
+  // （声明式 hook 如 dotenv-blocklist）。这跟 workflow 内 wrap-toolset 用的是同
+  // 一套组合策略，保证"工具层"与"prompt 层"行为口径一致。
+  const priorMessages = loadMessages(chatId);
+  const isFirstUserTurn =
+    priorMessages.length === 0 &&
+    fullSanitized.some((m) => m.role === "user");
+
+  const settings = loadSettings(workspaceRoot);
+  const promptHookRegistry = new HookRegistry();
+  copyHooksInto(promptHookRegistry, defaultHookRegistry);
+  copyHooksInto(
+    promptHookRegistry,
+    buildHookRegistryFromSettings(settings),
+  );
+
+  const hookContexts: string[] = [];
+
+  if (isFirstUserTurn) {
+    const sessionStartResult = await runHooks(
+      promptHookRegistry,
+      "SessionStart",
+      { event: "SessionStart", sessionId: chatId },
+      { sessionId: chatId },
+    );
+    if (sessionStartResult.decision === "deny") {
+      // deny 在 SessionStart 上语义比较强 —— 直接拒绝整条会话起步。
+      return new Response(
+        `Session denied by hook "${sessionStartResult.deniedBy}": ${
+          sessionStartResult.reason ?? "no reason given"
+        }`,
+        { status: 403 },
+      );
+    }
+    hookContexts.push(...sessionStartResult.additionalContexts);
+    hookContexts.push(...sessionStartResult.systemMessages);
+  }
+
+  // UserPromptSubmit：取最末一条 user 消息的纯文本喂 hook。
+  const latestUserText = extractLatestUserText(fullSanitized);
+  if (latestUserText !== null) {
+    const promptResult = await runHooks(
+      promptHookRegistry,
+      "UserPromptSubmit",
+      {
+        event: "UserPromptSubmit",
+        prompt: latestUserText,
+        sessionId: chatId,
+      },
+      { sessionId: chatId },
+    );
+    if (promptResult.decision === "deny") {
+      return new Response(
+        `Prompt denied by hook "${promptResult.deniedBy}": ${
+          promptResult.reason ?? "no reason given"
+        }`,
+        { status: 403 },
+      );
+    }
+    hookContexts.push(...promptResult.additionalContexts);
+    hookContexts.push(...promptResult.systemMessages);
+  }
+  // ---------------------------------------------------------------------
+
   await saveMessages(chatId, fullSanitized);
 
   // --- P4-b context compaction 决策 ------------------------------------
@@ -260,6 +340,7 @@ export async function POST(request: Request) {
       planMode,
       conversationSummary: agentSummary,
       skills,
+      hookContexts,
     },
   ]);
 
@@ -280,6 +361,31 @@ export async function POST(request: Request) {
     ),
     headers: { "x-workflow-run-id": run.runId },
   });
+}
+
+/**
+ * 从 sanitize 过的 UI messages 里找最末一条 user 消息，拼出它的纯文本。
+ * UIMessage.parts 里只取 `type: "text"`，其它 part（tool / file / etc）忽略。
+ * 没有 user 消息 / 没有 text part → 返回 null。
+ */
+function extractLatestUserText(messages: UIMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    const text = (m.parts ?? [])
+      .filter(
+        (p): p is { type: "text"; text: string } =>
+          typeof p === "object" &&
+          p !== null &&
+          (p as { type: unknown }).type === "text" &&
+          typeof (p as { text: unknown }).text === "string",
+      )
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+    return text.length > 0 ? text : null;
+  }
+  return null;
 }
 
 type ExistingActiveStreamResolution =

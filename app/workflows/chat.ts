@@ -45,6 +45,13 @@ export type ChatWorkflowOptions = {
   conversationSummary: string | null;
   /** 当前会话可用 skill 列表（POST handler 调 getSkills() 取得后传入）。 */
   skills: SkillMetadata[];
+  /**
+   * P9-c：UserPromptSubmit / SessionStart hook 在 POST 入口跑完之后收集到的
+   * `additionalContexts` + `systemMessages`。Workflow 原样透传给
+   * `createProjectEngineerAgent`，由 builder 注入 system prompt 末尾
+   * （`# Hook context` 段）。空数组 = 这次没收到，该段不出现。
+   */
+  hookContexts: string[];
 };
 
 type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
@@ -54,6 +61,7 @@ type StepResult = {
   responseModelMessages: ModelMessage[];
   finishReason: FinishReason | undefined;
   aborted: boolean;
+  postToolHookContexts: string[];
 };
 
 /**
@@ -120,6 +128,7 @@ async function runAgentLoop(
   const tokenBudgetSoftCap = await getTokenBudgetSoftCap();
 
   let tokenBudgetTripped = false;
+  let hookContextsForNextStep = [...options.hookContexts];
 
   for (let step = 0; step < limit; step++) {
     // 每步前估算下一次 LLM 调用的 input token（modelMessages 累积大小）。
@@ -148,10 +157,18 @@ async function runAgentLoop(
       originalMessagesForStep,
       assistantId,
       step,
+      hookContextsForNextStep,
     );
 
     if (result.responseModelMessages.length > 0) {
       modelMessages = [...modelMessages, ...result.responseModelMessages];
+    }
+
+    if (result.postToolHookContexts.length > 0) {
+      hookContextsForNextStep = [
+        ...hookContextsForNextStep,
+        ...result.postToolHookContexts,
+      ];
     }
 
     if (result.responseMessage) {
@@ -220,6 +237,7 @@ async function runAgentStep(
   originalMessagesForStep: UIMessage[],
   assistantId: string,
   stepIndex: number,
+  hookContexts: string[],
 ): Promise<StepResult> {
   "use step";
 
@@ -278,10 +296,37 @@ async function runAgentStep(
           Object.entries(baseTools).filter(([key]) => !filterKeys.has(key)),
         );
 
+  // P9-b/c：tool execute 上挂 PreToolUse / PostToolUse hook。
+  // 走 dynamic import 是因为 hooks barrel 会拉 `lib/workspaces`（含 node:path），
+  // workflow plugin 静态扫到 node module 就拒，跟 settings / mcp 那套同样处理。
+  //
+  // 每步现场拼一个组合 registry：
+  //   1. defaultHookRegistry（含 toolLogging，进程级单例）
+  //   2. 从 settings.hooks 还原的声明式 hook（如 dotenv-blocklist 开关）
+  // 两者按事件 concat 注入新 registry，不动全局 default。
+  const {
+    buildHookRegistryFromSettings,
+    copyHooksInto,
+    defaultHookRegistry,
+    HookRegistry,
+    wrapToolsetWithHooks,
+  } = await import("@/lib/hooks");
+  const combinedRegistry = new HookRegistry();
+  copyHooksInto(combinedRegistry, defaultHookRegistry);
+  copyHooksInto(combinedRegistry, buildHookRegistryFromSettings(settings));
+  const postToolHookContexts: string[] = [];
+  const hookedTools = wrapToolsetWithHooks(tools, combinedRegistry, {
+    sessionId: options.chatId,
+    onPostToolUseResult: (post) => {
+      postToolHookContexts.push(...post.additionalContexts, ...post.systemMessages);
+    },
+  });
+
   const agent = createProjectEngineerAgent({
-    tools,
+    tools: hookedTools,
     conversationSummary: options.conversationSummary,
     skills: options.skills,
+    hookContexts,
   });
 
   const abortController = new AbortController();
@@ -298,6 +343,7 @@ async function runAgentStep(
         shellApprovalPolicy: options.shellApprovalPolicy ?? "untrusted",
         permissionMode: options.permissionMode,
         planMode: options.planMode,
+        chatId: options.chatId,
       },
       abortSignal: abortController.signal,
       experimental_transform: smoothStream({
@@ -340,6 +386,7 @@ async function runAgentStep(
       responseModelMessages: response?.messages ?? [],
       finishReason,
       aborted: false,
+      postToolHookContexts,
     };
   } catch (error) {
     if (isAbortError(error)) {
@@ -348,6 +395,7 @@ async function runAgentStep(
         responseModelMessages: [],
         finishReason: "stop",
         aborted: true,
+        postToolHookContexts,
       };
     }
     if (isNoOutputError(error)) {
@@ -364,6 +412,7 @@ async function runAgentStep(
         responseModelMessages: [],
         finishReason: "stop",
         aborted: false,
+        postToolHookContexts,
       };
     }
     throw error;
