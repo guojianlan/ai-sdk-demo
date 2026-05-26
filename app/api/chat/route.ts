@@ -19,10 +19,11 @@ import { sanitizeChatUIMessages } from "@/lib/chat/sanitize-messages";
 import {
   compareAndSetActiveStreamId,
   getActiveStreamId,
+  loadActiveContext,
   loadMessages,
   loadSummary,
+  saveActiveContext,
   saveMessages,
-  saveSummary,
   upsertThread,
 } from "@/lib/persistence";
 import {
@@ -37,8 +38,11 @@ import { loadProjectSettings, loadSettings } from "@/lib/permissions";
 import {
   buildCompactionNotice,
   compactMessages,
+  compactMessagesDeterministically,
+  type CompactionResult,
   estimateTokens,
 } from "@/lib/compaction";
+import { lastAssistantMessageHasCompletedClientContinuationTool } from "@/lib/chat/auto-submit";
 import { env, requireGatewayApiKey } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
 import { runPhase1ForThread } from "@/lib/memory";
@@ -213,33 +217,27 @@ export async function POST(request: Request) {
 
   await saveMessages(chatId, fullSanitized);
 
-  // --- P4-b context compaction 决策 ------------------------------------
+  // --- Codex-style active context compaction ---------------------------
   //
-  // 约定：
-  // - DB 保留全量历史（包括 system-role 的 compaction 通知），UI 能看完整
-  // - **Agent 视角只看 non-system 消息**：system-role UI message 是我们自己造的
-  //   UI 标记（compaction 通知），不应该被喂进 LLM 的 system prompt
-  // - `session_summaries.compacted_count` 记录"agent 视角下前 N 条已被摘要代表"
-  //
-  // 每次请求：
-  //   1. fullSanitized 里过滤 role=system 得到 agent 视角的消息
-  //   2. 从 DB 读 existing summary，按 compacted_count 切出 agent 实际要看的 tail
-  //   3. tail 的 token 估算 > 阈值 → 再压一次；新 summary 叠加在 existing 上
-  //
-  // 链式压缩：summary 永远是"截至现在所有老消息"的最新版，而不是每次都从头压。
-  const existingSummary = loadSummary(chatId);
-  const compactedCountSoFar = existingSummary?.compactedCount ?? 0;
-
+  // DB 的 messages 表继续保存完整 UI transcript；agent 输入改走独立的
+  // active replacement history。这样被污染成 `user + assistant + assistant...`
+  // 的可见历史不会再因为 compacted_count 切片失败而直接灌进 workflow。
   const agentViewMessages = fullSanitized.filter(
     (message) => message.role !== "system",
   );
 
-  let agentMessages = agentViewMessages.slice(compactedCountSoFar);
-  let agentSummary = existingSummary?.summary ?? null;
+  const activeContext = loadActiveContext(chatId);
+  const legacySummary = activeContext ? null : loadSummary(chatId);
+
+  let agentMessages = buildAgentMessagesFromActiveContext(
+    activeContext,
+    agentViewMessages,
+  );
+  let agentSummary = activeContext?.summary ?? legacySummary?.summary ?? null;
   // 本轮压缩产生的通知消息；onFinish 时插入到保存链里给下次 UI 看到。
   let compactionNotice: UIMessage | null = null;
 
-  const currentTokens = estimateTokens(agentMessages);
+  const currentTokens = estimateActiveContextTokens(agentMessages, agentSummary);
   // 每次 POST 都打一行"现在多少 token / 阈值多少 / 会不会触发"——这是 compaction
   // 唯一可观察的信号，放在终端最显眼的位置方便 debug。
   const willCompact = currentTokens > env.compaction.thresholdTokens;
@@ -250,38 +248,70 @@ export async function POST(request: Request) {
     // 用和主 agent 同一个 gateway model 做摘要。没必要走 instrumentModel——
     // compaction 走单独一次调用，和主对话 stream 不混在同一条 devtools run 里。
     const summarizerModel = gateway.chatModel(env.gateway.modelId);
+    let result: CompactionResult<UIMessage>;
     try {
-      const result = await compactMessages({
+      result = await compactMessages({
         messages: agentMessages,
         model: summarizerModel,
         keepRecent: env.compaction.keepRecentMessages,
         previousSummary: agentSummary,
       });
-
-      if (result.compactedCount > 0 && result.summary) {
-        const newCompactedCount = compactedCountSoFar + result.compactedCount;
-        saveSummary(chatId, {
-          summary: result.summary,
-          compactedCount: newCompactedCount,
-          tokensBefore: result.tokensBefore,
-          tokensAfter: result.tokensAfter,
-        });
-        agentMessages = result.keptMessages;
-        agentSummary = result.summary;
-        // 产生一条 role=system 的通知，给前端显示（onFinish 时持久化进 DB）。
-        compactionNotice = buildCompactionNotice(result);
-        console.log(
-          `[compaction] chat=${chatId} ${result.tokensBefore}→${result.tokensAfter} tokens, compacted ${result.compactedCount} messages`,
-        );
-      }
     } catch (error) {
-      // compaction 失败不应阻塞主对话：降级继续用原消息喂 agent（可能超 context，
-      // 但至少能跑），并打日志。
       console.warn(
-        `[compaction] failed for chat=${chatId}, continuing without compaction:`,
+        `[compaction] llm failed for chat=${chatId}, falling back deterministically:`,
         error instanceof Error ? error.message : error,
       );
+      result = compactMessagesDeterministically({
+        messages: agentMessages,
+        keepRecent: env.compaction.keepRecentMessages,
+        previousSummary: agentSummary,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
+
+    if (!result.summary || result.tokensAfter > env.compaction.thresholdTokens) {
+      result = compactMessagesDeterministically({
+        messages: agentMessages,
+        keepRecent: env.compaction.keepRecentMessages,
+        previousSummary: agentSummary,
+        reason: !result.summary
+          ? "LLM compaction returned an empty summary."
+          : `LLM compaction stayed over budget (${result.tokensAfter} > ${env.compaction.thresholdTokens}).`,
+      });
+    }
+
+    if (result.tokensAfter > env.compaction.thresholdTokens) {
+      return Response.json(
+        {
+          error:
+            "Conversation is still over the active-context budget after deterministic compaction.",
+          tokensAfter: result.tokensAfter,
+          threshold: env.compaction.thresholdTokens,
+        },
+        { status: 413 },
+      );
+    }
+
+    const totalCompactedCount =
+      (activeContext?.compactedCount ?? 0) + result.compactedCount;
+    saveActiveContext(chatId, {
+      summary: result.summary,
+      replacementMessages: result.replacementMessages,
+      compactedCount: totalCompactedCount,
+      sourceMessageCount: agentViewMessages.length,
+      tokensBefore: result.tokensBefore,
+      tokensAfter: result.tokensAfter,
+      strategy: result.strategy,
+    });
+    agentMessages = result.replacementMessages;
+    agentSummary = result.summary;
+    compactionNotice = buildCompactionNotice({
+      ...result,
+      compactedCount: totalCompactedCount,
+    });
+    console.log(
+      `[compaction] chat=${chatId} strategy=${result.strategy} ${result.tokensBefore}→${result.tokensAfter} tokens, compacted=${totalCompactedCount}`,
+    );
   }
   // ---------------------------------------------------------------------
 
@@ -394,6 +424,49 @@ function extractLatestUserText(messages: UIMessage[]): string | null {
     return text.length > 0 ? text : null;
   }
   return null;
+}
+
+function buildAgentMessagesFromActiveContext(
+  activeContext: ReturnType<typeof loadActiveContext>,
+  agentViewMessages: UIMessage[],
+): UIMessage[] {
+  if (!activeContext) return agentViewMessages;
+
+  const sourceIndex = Math.min(
+    Math.max(activeContext.sourceMessageCount, 0),
+    agentViewMessages.length,
+  );
+  const tailMessages = agentViewMessages.slice(sourceIndex);
+  const nextMessages = [...activeContext.replacementMessages, ...tailMessages];
+
+  // Human answers to client-side tools mutate the latest assistant message
+  // instead of appending a new user message. If the active context cursor has
+  // already advanced past that assistant message, append that completed
+  // interaction so convertToModelMessages can see the tool output.
+  if (
+    tailMessages.length === 0 &&
+    lastAssistantMessageHasCompletedClientContinuationTool({
+      messages: agentViewMessages,
+    })
+  ) {
+    const lastMessage = agentViewMessages.at(-1);
+    if (lastMessage) {
+      nextMessages.push(lastMessage);
+    }
+  }
+
+  const deduped = new Map<string, UIMessage>();
+  for (const message of nextMessages) {
+    deduped.set(message.id, message);
+  }
+  return Array.from(deduped.values());
+}
+
+function estimateActiveContextTokens(
+  messages: UIMessage[],
+  summary: string | null,
+): number {
+  return estimateTokens(messages) + Math.ceil((summary?.length ?? 0) / 3);
 }
 
 type ExistingActiveStreamResolution =

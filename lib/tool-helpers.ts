@@ -279,8 +279,8 @@ export function interactiveTool<
     inputSchema: config.inputSchema,
     outputSchema: config.outputSchema,
     // 故意不给 execute：AI SDK 碰到无 execute 的 tool-call 会停在
-    // "input-available" 状态等 client 的 addToolOutput 回灌，
-    // 然后 useChat 的 sendAutomaticallyWhen 自动把更新后的 messages POST 回来，
-    // agent 继续下一步。
+    // "input-available" 状态等 client 的 addToolOutput 回灌。
+    // 前端只会为显式允许的 client-continuation tools 自动 POST 回服务器；
+    // 普通 server tool output 的续跑归 workflow outer loop 管。
   });
 }

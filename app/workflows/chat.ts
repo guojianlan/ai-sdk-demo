@@ -12,6 +12,7 @@ import { getWorkflowMetadata, getWritable } from "workflow";
 import { getRun } from "workflow/api";
 
 import type { WorkspaceAccessMode } from "@/lib/chat-access-mode";
+import type { CompactionResult } from "@/lib/compaction";
 import type { PermissionMode } from "@/lib/permissions";
 import type { SkillMetadata } from "@/lib/skills";
 import type { ShellApprovalPolicy } from "@/lib/tools/shell-approval";
@@ -103,6 +104,7 @@ async function runAgentLoop(
     options.agentMessages,
     { ignoreIncompleteToolCalls: true },
   );
+  let agentMessagesForStream = options.agentMessages;
 
   // 预先发一次 start 把"新 assistant message"的开始信号通知给 UI。
   // 后续每步的 toUIMessageStream 都设 sendStart:false / sendFinish:false，
@@ -112,6 +114,10 @@ async function runAgentLoop(
   let pendingResponseMessage: UIMessage | null = null;
   let exhaustedSteps = false;
   let finalFinishReason: FinishReason | undefined;
+  let conversationSummaryForNextStep = options.conversationSummary;
+  const compactionNoticesForPersist = options.compactionNotice
+    ? [options.compactionNotice]
+    : [];
 
   const limit = await getOuterStepLimit();
 
@@ -136,8 +142,94 @@ async function runAgentLoop(
     const currentTokenEstimate = estimateModelMessageTokens(modelMessages);
     if (currentTokenEstimate > tokenBudgetSoftCap) {
       console.warn(
-        `[workflow/chat] chat=${options.chatId} step=${step + 1} token budget tripped (estimated=${currentTokenEstimate} > cap=${tokenBudgetSoftCap}); breaking loop with finishReason=stop`,
+        `[workflow/chat] chat=${options.chatId} step=${step + 1} token budget tripped (estimated=${currentTokenEstimate} > cap=${tokenBudgetSoftCap}); attempting mid-turn compaction`,
       );
+      const visibleAgentMessages = buildVisibleAgentMessagesForWorkflow(
+        options.fullMessages,
+        pendingResponseMessage,
+      );
+      const activeMessagesForCompaction = pendingResponseMessage
+        ? [...options.agentMessages, pendingResponseMessage]
+        : options.agentMessages;
+      const midTurnCompaction = await compactWorkflowContext({
+        chatId: options.chatId,
+        messages: activeMessagesForCompaction,
+        previousSummary: conversationSummaryForNextStep,
+        sourceMessageCount: visibleAgentMessages.length,
+        tokenBudgetSoftCap,
+      });
+
+      if (midTurnCompaction.ok) {
+        modelMessages = await convertToModelMessages(
+          midTurnCompaction.replacementMessages,
+          { ignoreIncompleteToolCalls: true },
+        );
+        conversationSummaryForNextStep = midTurnCompaction.summary;
+        agentMessagesForStream = midTurnCompaction.replacementMessages;
+        compactionNoticesForPersist.push(midTurnCompaction.notice);
+        const compactedEstimate =
+          estimateModelMessageTokens(modelMessages) +
+          Math.ceil(midTurnCompaction.summary.length / 3);
+        console.log(
+          `[workflow/chat] chat=${options.chatId} mid-turn compaction strategy=${midTurnCompaction.strategy} estimated=${currentTokenEstimate}→${compactedEstimate}`,
+        );
+        if (compactedEstimate > tokenBudgetSoftCap) {
+          console.warn(
+            `[workflow/chat] chat=${options.chatId} mid-turn compaction still over budget (estimated=${compactedEstimate} > cap=${tokenBudgetSoftCap})`,
+          );
+          const budgetText =
+            `当前对话的 active context 压缩后仍超过预算（估算 ${compactedEstimate} tokens，` +
+            `上限 ${tokenBudgetSoftCap}）。我已经停止本轮继续调用模型，避免再次把超大历史送进 workflow；` +
+            "请发起下一条消息，我会先使用已保存的压缩上下文继续。";
+          pendingResponseMessage = await appendBudgetStopText({
+            chatId: options.chatId,
+            fullMessages: options.fullMessages,
+            compactionNotices: compactionNoticesForPersist,
+            assistantId,
+            existingMessage: pendingResponseMessage,
+            text: budgetText,
+          });
+          finalFinishReason = "stop";
+          tokenBudgetTripped = true;
+          break;
+        }
+      } else {
+        console.warn(
+          `[workflow/chat] chat=${options.chatId} mid-turn compaction failed: ${midTurnCompaction.error}`,
+        );
+        const budgetText =
+          `当前对话的 active context 已超过预算（估算 ${currentTokenEstimate} tokens，` +
+          `上限 ${tokenBudgetSoftCap}），并且本轮自动压缩失败：${midTurnCompaction.error}。` +
+          "我已经停止继续调用模型，避免再次把超大历史送进 workflow。";
+        pendingResponseMessage = await appendBudgetStopText({
+          chatId: options.chatId,
+          fullMessages: options.fullMessages,
+          compactionNotices: compactionNoticesForPersist,
+          assistantId,
+          existingMessage: pendingResponseMessage,
+          text: budgetText,
+        });
+        finalFinishReason = "stop";
+        tokenBudgetTripped = true;
+        break;
+      }
+    }
+
+    const currentTokenEstimateAfterCompaction =
+      estimateModelMessageTokens(modelMessages);
+    if (currentTokenEstimateAfterCompaction > tokenBudgetSoftCap) {
+      const budgetText =
+        `当前对话的 active context 已超过预算（估算 ${currentTokenEstimateAfterCompaction} tokens，` +
+        `上限 ${tokenBudgetSoftCap}）。我已经停止本轮继续调用模型，避免再次把超大历史送进 workflow；` +
+        "请发起下一条消息，我会先使用已保存的压缩上下文继续。";
+      pendingResponseMessage = await appendBudgetStopText({
+        chatId: options.chatId,
+        fullMessages: options.fullMessages,
+        compactionNotices: compactionNoticesForPersist,
+        assistantId,
+        existingMessage: pendingResponseMessage,
+        text: budgetText,
+      });
       finalFinishReason = "stop";
       tokenBudgetTripped = true;
       break;
@@ -148,7 +240,7 @@ async function runAgentLoop(
     // - step >0：用上一轮的 pendingResponseMessage，让 stream 继续追加到同一条 assistant 消息
     const originalMessagesForStep: UIMessage[] = pendingResponseMessage
       ? [pendingResponseMessage]
-      : options.agentMessages;
+      : agentMessagesForStream;
 
     const result = await runAgentStep(
       options,
@@ -158,6 +250,7 @@ async function runAgentLoop(
       assistantId,
       step,
       hookContextsForNextStep,
+      conversationSummaryForNextStep,
     );
 
     if (result.responseModelMessages.length > 0) {
@@ -175,11 +268,11 @@ async function runAgentLoop(
       pendingResponseMessage = result.responseMessage;
       // 同一个 assistantId 的快照：每步都是这条消息的"截至本步"完整版，
       // 累积保存只需要最新这一份。
-      const allMessages: UIMessage[] = [...options.fullMessages];
-      if (options.compactionNotice) {
-        allMessages.push(options.compactionNotice);
-      }
-      allMessages.push(pendingResponseMessage);
+      const allMessages = buildPersistedMessages(
+        options.fullMessages,
+        compactionNoticesForPersist,
+        pendingResponseMessage,
+      );
       await persistAssistantSnapshot(options.chatId, allMessages);
     }
 
@@ -191,9 +284,8 @@ async function runAgentLoop(
     //    finish=stop——这是 AI SDK 在 stopWhen=stepCountIs(1) 下的常见情况：
     //    模型本步只发了一个 tool call、AI SDK 执行了它就到了 step 上限，模型没看
     //    到结果就停了。这种情况外层必须再跑一步，让模型看到 tool 结果。
-    //    如果不这么处理，client 端 lastAssistantMessageIsCompleteWithToolCalls
-    //    会自动 resubmit，导致每个 tool call 起一次新 workflow / 新 assistantId
-    //    / UI 多冒一个 ENGINEER 气泡。
+    //    现在这个续跑只允许在后端 loop 里发生；前端不会再用通用
+    //    lastAssistantMessageIsCompleteWithToolCalls 把 server tool output 开成新 workflow。
     const responseParts = result.responseMessage?.parts ?? [];
     const isToolCallContinuation =
       result.finishReason === "tool-calls" || hasCompletedToolCalls(responseParts);
@@ -303,6 +395,7 @@ async function runAgentStep(
   assistantId: string,
   stepIndex: number,
   hookContexts: string[],
+  conversationSummary: string | null,
 ): Promise<StepResult> {
   "use step";
 
@@ -398,7 +491,7 @@ async function runAgentStep(
 
   const agent = createProjectEngineerAgent({
     tools: hookedTools,
-    conversationSummary: options.conversationSummary,
+    conversationSummary,
     skills: options.skills,
     hookContexts,
   });
@@ -504,6 +597,101 @@ async function reserveAssistantId(): Promise<string> {
   return generateIdAi();
 }
 
+type WorkflowCompactionResult =
+  | {
+      ok: true;
+      summary: string;
+      replacementMessages: UIMessage[];
+      strategy: "llm" | "deterministic-fallback";
+      notice: UIMessage;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+async function compactWorkflowContext(params: {
+  chatId: string;
+  messages: UIMessage[];
+  previousSummary: string | null;
+  sourceMessageCount: number;
+  tokenBudgetSoftCap: number;
+}): Promise<WorkflowCompactionResult> {
+  "use step";
+
+  const {
+    buildCompactionNotice,
+    compactMessages,
+    compactMessagesDeterministically,
+  } = await import("@/lib/compaction");
+  const { env } = await import("@/lib/env");
+  const { gateway } = await import("@/lib/gateway");
+  const { loadActiveContext, saveActiveContext } = await import("@/lib/persistence");
+
+  try {
+    const summarizerModel = gateway.chatModel(env.gateway.modelId);
+    let result: CompactionResult<UIMessage>;
+    try {
+      result = await compactMessages({
+        messages: params.messages,
+        model: summarizerModel,
+        keepRecent: env.compaction.keepRecentMessages,
+        previousSummary: params.previousSummary,
+      });
+    } catch (error) {
+      result = compactMessagesDeterministically({
+        messages: params.messages,
+        keepRecent: env.compaction.keepRecentMessages,
+        previousSummary: params.previousSummary,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!result.summary || result.tokensAfter > params.tokenBudgetSoftCap) {
+      result = compactMessagesDeterministically({
+        messages: params.messages,
+        keepRecent: env.compaction.keepRecentMessages,
+        previousSummary: params.previousSummary,
+        reason: !result.summary
+          ? "Workflow mid-turn LLM compaction returned an empty summary."
+          : `Workflow mid-turn LLM compaction stayed over budget (${result.tokensAfter} > ${params.tokenBudgetSoftCap}).`,
+      });
+    }
+
+    if (result.tokensAfter > params.tokenBudgetSoftCap) {
+      return {
+        ok: false,
+        error: `compacted context still exceeds budget (${result.tokensAfter} > ${params.tokenBudgetSoftCap})`,
+      };
+    }
+
+    const previousActiveContext = loadActiveContext(params.chatId);
+    saveActiveContext(params.chatId, {
+      summary: result.summary,
+      replacementMessages: result.replacementMessages,
+      compactedCount:
+        (previousActiveContext?.compactedCount ?? 0) + result.compactedCount,
+      sourceMessageCount: params.sourceMessageCount,
+      tokensBefore: result.tokensBefore,
+      tokensAfter: result.tokensAfter,
+      strategy: result.strategy,
+    });
+
+    return {
+      ok: true,
+      summary: result.summary,
+      replacementMessages: result.replacementMessages,
+      strategy: result.strategy,
+      notice: buildCompactionNotice(result),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function sendStartChunk(messageId: string): Promise<void> {
   "use step";
   const writer = getWritable<ChatUIMessageChunk>().getWriter();
@@ -512,6 +700,71 @@ async function sendStartChunk(messageId: string): Promise<void> {
   } finally {
     writer.releaseLock();
   }
+}
+
+async function appendBudgetStopText(params: {
+  chatId: string;
+  fullMessages: UIMessage[];
+  compactionNotices: UIMessage[];
+  assistantId: string;
+  existingMessage: UIMessage | null;
+  text: string;
+}): Promise<UIMessage> {
+  "use step";
+
+  const textPartId = "budget-stop";
+  const writer = getWritable<ChatUIMessageChunk>().getWriter();
+  try {
+    await writer.write({ type: "text-start", id: textPartId } as ChatUIMessageChunk);
+    await writer.write({
+      type: "text-delta",
+      id: textPartId,
+      delta: params.text,
+    } as ChatUIMessageChunk);
+    await writer.write({ type: "text-end", id: textPartId } as ChatUIMessageChunk);
+  } finally {
+    writer.releaseLock();
+  }
+
+  const responseMessage: UIMessage = params.existingMessage
+    ? {
+        ...params.existingMessage,
+        parts: [...params.existingMessage.parts, { type: "text", text: params.text }],
+      }
+    : {
+        id: params.assistantId,
+        role: "assistant",
+        parts: [{ type: "text", text: params.text }],
+      };
+
+  const { saveMessages } = await import("@/lib/persistence");
+  const allMessages = buildPersistedMessages(
+    params.fullMessages,
+    params.compactionNotices,
+    responseMessage,
+  );
+  await saveMessages(params.chatId, allMessages);
+
+  return responseMessage;
+}
+
+function buildPersistedMessages(
+  fullMessages: UIMessage[],
+  compactionNotices: UIMessage[],
+  responseMessage: UIMessage,
+): UIMessage[] {
+  return [...fullMessages, ...compactionNotices, responseMessage];
+}
+
+function buildVisibleAgentMessagesForWorkflow(
+  fullMessages: UIMessage[],
+  responseMessage: UIMessage | null,
+): UIMessage[] {
+  const messages = fullMessages.filter((message) => message.role !== "system");
+  if (responseMessage) {
+    messages.push(responseMessage);
+  }
+  return messages;
 }
 
 async function sendFinishChunk(finishReason: FinishReason): Promise<void> {

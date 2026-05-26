@@ -2,34 +2,45 @@ import { generateText, type LanguageModel, type UIMessage } from "ai";
 
 /**
  * 标记一条 role=system 消息是 compaction 通知而不是随意的 system 内容。
- * 前端靠这个 sentinel 精准识别"这是压缩通知"，渲染成紧凑的一行系统提示；
- * 不同于 user / assistant 气泡。
+ * 前端靠这个 sentinel 精准识别"这是压缩通知"，渲染成紧凑的一行系统提示。
  */
 export const COMPACTION_NOTICE_SENTINEL = "__compaction_notice__::";
+
+export type CompactionStrategy = "llm" | "deterministic-fallback";
 
 export type CompactionNoticePayload = {
   compactedCount: number;
   tokensBefore: number;
   tokensAfter: number;
+  strategy: CompactionStrategy;
   /** 人读的一句话，前端直接展示。 */
   humanText: string;
 };
 
-/**
- * 把一次 compaction 的结果打包成一条 role=system 的 UIMessage，给 DB + UI 消费。
- *
- * 消息文本格式：`<sentinel><JSON 字符串化的 payload>`
- * 前端看到 sentinel 开头就解析 payload 渲染，看不到就退回纯文本。
- */
+export type CompactionResult<M extends UIMessage = UIMessage> = {
+  summary: string;
+  /** 压缩后的 active model history。UI 全量历史继续保存在 messages 表里。 */
+  replacementMessages: M[];
+  /** 被本次 replacement 语义覆盖掉的原消息数量，主要用于 UI/debug。 */
+  compactedCount: number;
+  /** 压缩前、后的 token 粗估，方便日志和 fail-closed 判断。 */
+  tokensBefore: number;
+  tokensAfter: number;
+  strategy: CompactionStrategy;
+};
+
 export function buildCompactionNotice(
   result: CompactionResult<UIMessage>,
 ): UIMessage {
-  const humanText = `已把早期 ${result.compactedCount} 条消息折叠为摘要（${result.tokensBefore} → ${result.tokensAfter} tokens）。`;
+  const strategyText =
+    result.strategy === "llm" ? "摘要" : "确定性兜底摘要";
+  const humanText = `已用${strategyText}把早期 ${result.compactedCount} 条消息折叠为 active context（${result.tokensBefore} → ${result.tokensAfter} tokens）。`;
 
   const payload: CompactionNoticePayload = {
     compactedCount: result.compactedCount,
     tokensBefore: result.tokensBefore,
     tokensAfter: result.tokensAfter,
+    strategy: result.strategy,
     humanText,
   };
 
@@ -45,9 +56,6 @@ export function buildCompactionNotice(
   };
 }
 
-/**
- * 前端用：如果这条 UIMessage 是 compaction 通知，解析出结构化 payload；否则返回 null。
- */
 export function parseCompactionNotice(
   message: UIMessage,
 ): CompactionNoticePayload | null {
@@ -58,43 +66,24 @@ export function parseCompactionNotice(
     .join("");
   if (!text.startsWith(COMPACTION_NOTICE_SENTINEL)) return null;
   try {
-    return JSON.parse(
+    const parsed = JSON.parse(
       text.slice(COMPACTION_NOTICE_SENTINEL.length),
-    ) as CompactionNoticePayload;
+    ) as Partial<CompactionNoticePayload>;
+    return {
+      compactedCount: parsed.compactedCount ?? 0,
+      tokensBefore: parsed.tokensBefore ?? 0,
+      tokensAfter: parsed.tokensAfter ?? 0,
+      strategy: parsed.strategy ?? "llm",
+      humanText: parsed.humanText ?? "",
+    };
   } catch {
     return null;
   }
 }
 
 /**
- * P4-b：context compaction。
- *
- * 两件事：
- * 1. `estimateTokens(messages)` —— 粗估整个对话的 token 数。没用 tiktoken，
- *    直接 char count / 3。多语言、包含 JSON tool output 的情形下这个 heuristic
- *    误差 ±30%，**足够做"要不要压缩"的阈值判断**（不需要精确到字节）。
- *    如果以后想精确，可以换 `@dqbd/tiktoken` 或 provider 自家的 tokenizer。
- *
- * 2. `compactMessages({ messages, model, keepRecent })` —— 核心 handoff 摘要逻辑：
- *    - 把老消息（除最近 N 条外）喂给一次**额外的 LLM 调用**
- *    - 让它产出一段结构化摘要（USER'S CORE REQUEST / COMPLETED / DECISIONS /
- *      PREFERENCES / PENDING / OPEN QUESTIONS 六段式，照抄 codex compact.rs 的
- *      字段分类）
- *    - 返回 `{ summary, keptMessages, compactedCount }` —— 主路由拿着 summary
- *      塞进 prompt layer，拿着 keptMessages 当新 history 喂给 agent
- *
- * 设计选择：
- * - 摘要调用用 `generateText` 而不是 `streamText`：摘要是一次性产物，不需要流；
- *   而且调用阻塞在主请求之前，简单直接。
- * - 按**消息边界切**，不按 part 切：tool-call 和对应的 tool-result 都在同一条
- *   assistant message 的 parts 里；按消息切就天然把它们绑在一起。
- * - keepRecent 的切分做了"至少保留一条 user 消息" 的兜底：如果最近 N 条刚好都
- *   是 assistant message（奇怪但可能发生），往前走到找到 user message 为止。
- */
-
-/**
- * 用于**摘要 prompt 输入**的精简文本 —— tool input / output 都截断，省 summarizer token。
- * 注意不能用这个函数来估 token：tool output 被裁成 800 字符，会严重低估模型实际要付的 context 成本。
+ * 用于摘要 prompt 输入的精简文本。tool input/output 会截断，避免摘要请求本身
+ * 被超大工具输出撑爆。
  */
 function messageToSummarizerInput(message: UIMessage): string {
   const parts: string[] = [];
@@ -104,29 +93,33 @@ function messageToSummarizerInput(message: UIMessage): string {
     } else if (part.type.startsWith("tool-") || part.type === "dynamic-tool") {
       const toolPart = part as {
         type: string;
+        toolName?: string;
         input?: unknown;
         output?: unknown;
+        errorText?: string;
+        state?: string;
       };
-      const toolName = part.type.replace(/^tool-/, "");
+      const toolName =
+        toolPart.type === "dynamic-tool"
+          ? toolPart.toolName ?? "dynamic-tool"
+          : toolPart.type.replace(/^tool-/, "");
       const inputSummary = toolPart.input
         ? JSON.stringify(toolPart.input).slice(0, 500)
         : "";
       const outputSummary = toolPart.output
         ? JSON.stringify(toolPart.output).slice(0, 800)
         : "";
+      const errorSummary = toolPart.errorText
+        ? ` error=${toolPart.errorText.slice(0, 300)}`
+        : "";
       parts.push(
-        `[tool ${toolName}] input=${inputSummary} output=${outputSummary}`,
+        `[tool ${toolName}] state=${toolPart.state ?? "unknown"} input=${inputSummary} output=${outputSummary}${errorSummary}`,
       );
     }
   }
   return `[${message.role}] ${parts.join("\n")}`;
 }
 
-/**
- * 用于 **token 估算** 的纯文本序列化 —— 把 tool input / output 完整 JSON 化，
- * **不做截断**。因为 compaction 的主要服务场景就是"大 tool output 填满 context"，
- * 估算阶段必须看到真实的体量才会触发压缩。
- */
 function messageToFullPlainText(message: UIMessage): string {
   const parts: string[] = [];
   for (const part of message.parts) {
@@ -135,24 +128,27 @@ function messageToFullPlainText(message: UIMessage): string {
     } else if (part.type.startsWith("tool-") || part.type === "dynamic-tool") {
       const toolPart = part as {
         type: string;
+        toolName?: string;
         input?: unknown;
         output?: unknown;
+        errorText?: string;
+        state?: string;
       };
-      const toolName = part.type.replace(/^tool-/, "");
+      const toolName =
+        toolPart.type === "dynamic-tool"
+          ? toolPart.toolName ?? "dynamic-tool"
+          : toolPart.type.replace(/^tool-/, "");
       const inputFull = toolPart.input ? JSON.stringify(toolPart.input) : "";
-      const outputFull = toolPart.output
-        ? JSON.stringify(toolPart.output)
-        : "";
-      parts.push(`[tool ${toolName}] input=${inputFull} output=${outputFull}`);
+      const outputFull = toolPart.output ? JSON.stringify(toolPart.output) : "";
+      const errorFull = toolPart.errorText ? ` error=${toolPart.errorText}` : "";
+      parts.push(
+        `[tool ${toolName}] state=${toolPart.state ?? "unknown"} input=${inputFull} output=${outputFull}${errorFull}`,
+      );
     }
   }
   return `[${message.role}] ${parts.join("\n")}`;
 }
 
-/**
- * 粗估 tokens。中文 ≈ 1 char/token，英文 ≈ 4 char/token，JSON 介于两者——
- * 用 3 做中间值，足够判断阈值。**不截断 tool output**，这是 compaction 的主要发生场景。
- */
 export function estimateTokens(messages: UIMessage[]): number {
   let totalChars = 0;
   for (const message of messages) {
@@ -161,150 +157,236 @@ export function estimateTokens(messages: UIMessage[]): number {
   return Math.ceil(totalChars / 3);
 }
 
+function estimateTextTokens(text: string): number {
+  return Math.ceil(text.length / 3);
+}
+
 const COMPACTION_SYSTEM_PROMPT = `
-You are a "conversation handoff" summarizer. Your job is to compress a long
-coding-assistant conversation into a concise handoff brief that the next
-instance of the assistant can use to continue the work without re-reading
-the full history.
+You are a "conversation handoff" summarizer for a coding agent.
+Compress the transcript into a concise handoff brief that can replace old
+assistant/tool history.
 
-Structure your output as six sections, in this exact order, using these
-exact headings:
+Use these exact headings:
 
-## USER'S CORE REQUEST
-What is the user overall trying to accomplish in this conversation?
-One to three sentences. Ignore tangents.
+## CURRENT GOAL
+What the user is trying to accomplish now.
 
 ## COMPLETED
-Concrete work that has already been done: files read, files edited, tools
-used, information established. Reference files by relative path. Be
-specific but compact. Use bullet points.
+Concrete work already done: files read, files edited, commands run, facts established.
 
 ## DECISIONS
-Key technical judgment calls made so far (library picks, architecture
-choices, deliberate tradeoffs). Each bullet: decision + one-line rationale.
+Technical decisions and rationale.
 
-## PREFERENCES
-Stated user preferences / dislikes / coding style rules that should govern
-future work. Each bullet = one preference.
+## CONSTRAINTS AND USER PREFERENCES
+Hard constraints, style rules, validation expectations, and user preferences.
 
-## PENDING
-Unfinished sub-tasks or the obvious next step. Ordered by priority.
+## NEXT STEPS
+The next useful actions in order.
 
-## OPEN QUESTIONS
-Things the user has been asked but hasn't answered yet, or ambiguity the
-next assistant will probably need to clarify.
+## CRITICAL REFERENCES
+File paths, commands, ids, or error messages that future work must preserve.
 
 Rules:
-- Be concrete. No filler phrases like "the user and assistant discussed".
-- Do NOT invent facts not present in the transcript.
-- Do NOT include code blocks — reference changes as "edited X to do Y".
-- If a section is genuinely empty, write "(none)" under that heading.
-- Total output: under ~600 words.
+- Be concrete. Do not write vague phrases like "the conversation discussed".
+- Do not invent facts not present in the transcript.
+- Do not include code blocks.
+- If a section is empty, write "(none)".
+- Keep the result under 600 words.
 `.trim();
 
-export type CompactionResult<M extends UIMessage = UIMessage> = {
-  summary: string;
-  /** 保留原样的最近几条消息（按时间顺序）。保持和输入同一种 UIMessage 子类型。 */
-  keptMessages: M[];
-  /** 被压缩掉的消息数量（前 N 条被 summary 取代）。 */
-  compactedCount: number;
-  /** 压缩前、后的 token 粗估，方便日志。 */
-  tokensBefore: number;
-  tokensAfter: number;
-};
+function buildTranscript(messages: UIMessage[], previousSummary?: string | null) {
+  const transcriptParts: string[] = [];
+  if (previousSummary) {
+    transcriptParts.push(
+      `(Previous active-context summary:\n${previousSummary}\n)`,
+    );
+  }
+  transcriptParts.push("--- Conversation transcript to compact ---");
+  for (const message of messages) {
+    transcriptParts.push(messageToSummarizerInput(message));
+  }
+  return transcriptParts.join("\n\n");
+}
 
-/**
- * 切分 messages：把"要压缩的前半"和"要保留的后半"分开。
- *
- * 规则：
- * - 先从 `messages.length - keepRecent` 处切
- * - **向前**（往小索引方向）回退直到切点是一条 user message——确保 kept 的第一条
- *   永远是 user role。如果让 kept 以 assistant 起头，LLM 会迷惑于"前面没人发话
- *   为什么会有 assistant 在说话"，直接空转返回 `finish=other`（真坑踩过的）
- * - 如果向前找不到 user（整段都是 assistant），**宁可不压**（返回 toCompact=[]），
- *   也不要让 agent 收到一段没 user 锚定的 kept 消息
- *
- * 副作用：kept 可能比 keepRecent 多几条（因为要兜到 user）——这是用正确性换一点
- * 压缩比，值得。
- */
-function splitForCompaction<M extends UIMessage>(
+function cloneUserMessageWithText(message: UIMessage, text: string): UIMessage {
+  return {
+    ...message,
+    parts: [{ type: "text", text }],
+  };
+}
+
+function getUserText(message: UIMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text: string }).text)
+    .join("\n")
+    .trim();
+}
+
+function selectRecentUserMessages<M extends UIMessage>(
   messages: M[],
-  keepRecent: number,
-): { toCompact: M[]; kept: M[] } {
-  if (messages.length <= keepRecent) {
-    return { toCompact: [], kept: messages };
+  tokenBudget: number,
+  maxMessages: number,
+): M[] {
+  if (tokenBudget <= 0 || maxMessages <= 0) return [];
+
+  const selected: M[] = [];
+  let remaining = tokenBudget;
+  let latestUser: M | null = null;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "user") continue;
+    latestUser ??= message;
+    if (selected.length >= maxMessages) continue;
+
+    const messageTokens = estimateTokens([message]);
+    if (messageTokens > remaining) continue;
+    selected.unshift(message);
+    remaining -= messageTokens;
   }
 
-  let splitIndex = messages.length - keepRecent;
-  // 向前回退到最近的一条 user message。
-  while (splitIndex > 0 && messages[splitIndex].role !== "user") {
-    splitIndex--;
+  if (selected.length === 0 && latestUser) {
+    const maxChars = Math.max(120, tokenBudget * 3);
+    const text = getUserText(latestUser).slice(-maxChars);
+    return [cloneUserMessageWithText(latestUser, text) as M];
   }
 
-  // 边界：前面一整串都没 user role（极端情况），放弃压缩。
-  if (messages[splitIndex]?.role !== "user") {
-    return { toCompact: [], kept: messages };
+  return selected;
+}
+
+function buildDeterministicSummary(params: {
+  messages: UIMessage[];
+  previousSummary?: string | null;
+  reason?: string;
+}): string {
+  const latestUser = [...params.messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  const latestUserText = latestUser ? getUserText(latestUser) : "";
+  const toolNames = new Set<string>();
+
+  for (const message of params.messages) {
+    for (const part of message.parts) {
+      if (part.type.startsWith("tool-")) {
+        toolNames.add(part.type.slice("tool-".length));
+      } else if (part.type === "dynamic-tool") {
+        toolNames.add((part as { toolName?: string }).toolName ?? "dynamic-tool");
+      }
+    }
   }
+
+  return [
+    "## CURRENT GOAL",
+    latestUserText
+      ? latestUserText.slice(0, 1200)
+      : "The earlier visible transcript was too large to keep in model context.",
+    "",
+    "## COMPLETED",
+    params.previousSummary
+      ? `- Previous summary was preserved:\n${params.previousSummary}`
+      : "- Earlier assistant and tool details were omitted from active model history to stay within budget.",
+    toolNames.size > 0
+      ? `- Earlier tool activity included: ${Array.from(toolNames).sort().join(", ")}.`
+      : "- No earlier tool names were recoverable from the compacted transcript.",
+    "",
+    "## DECISIONS",
+    "- Deterministic fallback compaction was used because LLM compaction was unavailable or unsafe.",
+    "",
+    "## CONSTRAINTS AND USER PREFERENCES",
+    "- Preserve the full visible UI transcript in storage; use this summary plus recent user intent as active model context.",
+    "",
+    "## NEXT STEPS",
+    "- Continue from the latest user request. If old tool output details are required, ask the user or inspect the workspace again.",
+    "",
+    "## CRITICAL REFERENCES",
+    params.reason ? `- Fallback reason: ${params.reason}` : "- (none)",
+  ].join("\n");
+}
+
+export function compactMessagesDeterministically<M extends UIMessage>(params: {
+  messages: M[];
+  keepRecent: number;
+  previousSummary?: string | null;
+  reason?: string;
+  recentUserTokenBudget?: number;
+}): CompactionResult<M> {
+  const tokensBefore = estimateTokens(params.messages);
+  const summary = buildDeterministicSummary({
+    messages: params.messages,
+    previousSummary: params.previousSummary,
+    reason: params.reason,
+  });
+  const replacementMessages = selectRecentUserMessages(
+    params.messages,
+    params.recentUserTokenBudget ?? 4_000,
+    params.keepRecent,
+  );
+  const tokensAfter =
+    estimateTokens(replacementMessages) + estimateTextTokens(summary);
 
   return {
-    toCompact: messages.slice(0, splitIndex),
-    kept: messages.slice(splitIndex),
+    summary,
+    replacementMessages,
+    compactedCount: Math.max(
+      0,
+      params.messages.length - replacementMessages.length,
+    ),
+    tokensBefore,
+    tokensAfter,
+    strategy: "deterministic-fallback",
   };
 }
 
 export async function compactMessages<M extends UIMessage>(params: {
   messages: M[];
-  model: LanguageModel;
+  model?: LanguageModel;
   keepRecent: number;
-  /** 可选：上一次压缩保留下来的 summary。有的话拼进 prompt 作为"上一次压缩结束时的状态"，避免信息丢失。 */
   previousSummary?: string | null;
+  recentUserTokenBudget?: number;
+  summarizeTranscript?: (input: {
+    system: string;
+    prompt: string;
+  }) => Promise<string>;
 }): Promise<CompactionResult<M>> {
-  const { messages, model, keepRecent, previousSummary } = params;
-  const tokensBefore = estimateTokens(messages);
+  const tokensBefore = estimateTokens(params.messages);
+  const transcript = buildTranscript(params.messages, params.previousSummary);
 
-  const { toCompact, kept } = splitForCompaction(messages, keepRecent);
+  const summary = params.summarizeTranscript
+    ? await params.summarizeTranscript({
+        system: COMPACTION_SYSTEM_PROMPT,
+        prompt: transcript,
+      })
+    : await (async () => {
+        if (!params.model) {
+          throw new Error("compactMessages requires a model or summarizer");
+        }
+        const result = await generateText({
+          model: params.model,
+          system: COMPACTION_SYSTEM_PROMPT,
+          prompt: transcript,
+        });
+        return result.text;
+      })();
 
-  if (toCompact.length === 0) {
-    // 没啥好压的（对话还太短）。返回一个空 summary，调用方自己决定要不要写进 DB。
-    return {
-      summary: "",
-      keptMessages: kept,
-      compactedCount: 0,
-      tokensBefore,
-      tokensAfter: tokensBefore,
-    };
-  }
-
-  // 把老消息拼成纯文本，喂给摘要 LLM。加上上一次的 summary 作为前置 context，
-  // 保证链式压缩时信息不会在每一轮丢一点。
-  const transcriptParts: string[] = [];
-  if (previousSummary) {
-    transcriptParts.push(
-      `(Previous handoff summary from an earlier compaction:\n${previousSummary}\n)`,
-    );
-  }
-  transcriptParts.push("--- Conversation transcript to compact ---");
-  for (const message of toCompact) {
-    // 摘要输入用截断版本：tool output 裁到 800 字节，summarizer 看到梗概就够。
-    transcriptParts.push(messageToSummarizerInput(message));
-  }
-  const transcript = transcriptParts.join("\n\n");
-
-  const result = await generateText({
-    model,
-    system: COMPACTION_SYSTEM_PROMPT,
-    prompt: transcript,
-    // 没必要流式；一次性拿字符串就行。
-  });
-
-  const summary = result.text.trim();
-  const tokensAfter = estimateTokens(kept) + Math.ceil(summary.length / 3);
+  const replacementMessages = selectRecentUserMessages(
+    params.messages,
+    params.recentUserTokenBudget ?? 4_000,
+    params.keepRecent,
+  );
+  const normalizedSummary = summary.trim();
+  const tokensAfter =
+    estimateTokens(replacementMessages) + estimateTextTokens(normalizedSummary);
 
   return {
-    summary,
-    keptMessages: kept,
-    compactedCount: toCompact.length,
+    summary: normalizedSummary,
+    replacementMessages,
+    compactedCount: Math.max(
+      0,
+      params.messages.length - replacementMessages.length,
+    ),
     tokensBefore,
     tokensAfter,
+    strategy: "llm",
   };
 }

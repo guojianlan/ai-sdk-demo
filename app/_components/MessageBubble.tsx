@@ -23,6 +23,10 @@ import {
 function SystemNoticeLine({ message }: { message: UIMessage }) {
   const compaction = parseCompactionNotice(message);
   if (compaction) {
+    const strategyLabel =
+      compaction.strategy === "deterministic-fallback"
+        ? "fallback"
+        : "summary";
     return (
       <div className="my-2 flex items-center gap-3 px-2">
         <span
@@ -39,7 +43,7 @@ function SystemNoticeLine({ message }: { message: UIMessage }) {
             className="h-1.5 w-1.5 rounded-full bg-slate-500"
             aria-hidden="true"
           />
-          compacted · {compaction.compactedCount} msgs ·{" "}
+          compacted · {strategyLabel} · {compaction.compactedCount} msgs ·{" "}
           {(compaction.tokensBefore / 1000).toFixed(1)}k→
           {(compaction.tokensAfter / 1000).toFixed(1)}k tokens
         </span>

@@ -4,6 +4,7 @@ import type { UIMessage } from "ai";
 
 import { getDb } from "./db";
 import { appendJsonlLine, type SessionMetaPayload } from "./jsonl";
+import { deleteActiveContext } from "./active-context";
 import { deleteMessages, loadMessages } from "./messages";
 import { getSessionFilePath } from "./paths";
 import { deleteRuntimeState } from "./runtime";
@@ -16,7 +17,8 @@ import { deleteSummary } from "./summaries";
  * - `threads` 表 (SQLite)        ：会话元数据，list 用
  * - `messages` 表 (SQLite)        ：当前消息快照，load 用（行存、整段 replace）
  * - `<thread-id>.jsonl` (文件)    ：append-only 事件日志，给 memory 管线消费
- * - `thread_summaries` (SQLite)   ：compaction 摘要
+ * - `thread_summaries` (SQLite)   ：legacy compaction 摘要
+ * - `thread_active_context`       ：当前 agent replacement history
  * - `thread_runtime_state` (SQLite)：workflow active stream
  *
  * 设计原则：caller 持有 thread.id（= 前端 chatId），所有 API 用 id 做 key。
@@ -300,6 +302,7 @@ export async function deleteThread(threadId: string): Promise<void> {
   // SQLite：四张表全清
   deleteMessages(threadId);
   deleteSummary(threadId);
+  deleteActiveContext(threadId);
   deleteRuntimeState(threadId);
   getDb().prepare(`DELETE FROM threads WHERE id = ?`).run(threadId);
 }

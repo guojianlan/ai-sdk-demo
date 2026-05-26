@@ -130,6 +130,26 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  // P4-c：Codex-style active model context。UI 全量 messages 仍保留在 messages 表；
+  // agent 输入从这张表里的 replacement_messages 继续，避免用 compacted_count
+  // 对可见 transcript 做脆弱切片。
+  {
+    version: 6,
+    name: "add-thread-active-context",
+    sql: `
+      CREATE TABLE IF NOT EXISTS thread_active_context (
+        thread_id            TEXT PRIMARY KEY,
+        summary              TEXT NOT NULL,
+        replacement_messages TEXT NOT NULL,
+        compacted_count      INTEGER NOT NULL,
+        source_message_count INTEGER NOT NULL,
+        tokens_before        INTEGER NOT NULL,
+        tokens_after         INTEGER NOT NULL,
+        strategy             TEXT NOT NULL,
+        updated_at           INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 /** 启动时跑：把 user_version 推到 latest，途中遇到失败抛错。 */

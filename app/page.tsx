@@ -5,11 +5,11 @@ import type { UIMessage } from "ai";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
-  lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { DEFAULT_WORKSPACE_ACCESS_MODE } from "@/lib/chat-access-mode";
+import { lastAssistantMessageHasCompletedClientContinuationTool } from "@/lib/chat/auto-submit";
 import {
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
@@ -279,15 +279,18 @@ export default function Home() {
     // auto-scroll effect 同步被打同等次数 → React 超过 "max update depth" 报错。
     // 50ms 既够流畅（~20fps），又把渲染次数砸到 1/10 以下。
     experimental_throttle: 50,
-    // 自动 resend 的两种触发：
+    // 自动 resend 只保留人类交互回执：
     // 1) 用户刚点完 approval 同意/拒绝 → part 进入 approval-responded，
     //    需要把回执发回服务器让 AI SDK 执行 tool。
-    // 2) 兜底：所有 tool 都 output-available 了，让模型继续讲解。
+    // 2) ask_user_question / ask_choice / show_reference 这类无 server execute 的
+    //    client tool 已由浏览器写入 output，需要把这个 human response 发回后端。
+    // 普通 server tool output 的续跑归 runAgentWorkflow 的 outer loop 管，
+    // 这里不能再用 lastAssistantMessageIsCompleteWithToolCalls，否则会开新 workflow。
     sendAutomaticallyWhen: ({ messages: currentMessages }) =>
       lastAssistantMessageIsCompleteWithApprovalResponses({
         messages: currentMessages,
       }) ||
-      lastAssistantMessageIsCompleteWithToolCalls({
+      lastAssistantMessageHasCompletedClientContinuationTool({
         messages: currentMessages,
       }),
   });
@@ -647,7 +650,8 @@ export default function Home() {
                       onToolOutput={({ tool, toolCallId, output }) =>
                         // P3-c: 交互工具（ask_user_question 等）没有 server-side execute，
                         // 卡片收集到用户的选择后靠 addToolOutput 把 output 回灌回去；
-                        // 之后 useChat 的 sendAutomaticallyWhen 会自动继续下一步。
+                        // 之后窄化后的 sendAutomaticallyWhen 只为这类 client tool
+                        // 续发，不会吞掉后端 server-tool loop 的所有权。
                         // 这里做一次 string → typed tool name 的松散 cast，避免把
                         // AI SDK 的泛型类型扩散到整个 tool-card 层。
                         void addToolOutput({

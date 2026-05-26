@@ -36,6 +36,14 @@ export {
   type ThreadSummary,
 } from "./summaries";
 
+// active compacted model context
+export {
+  saveActiveContext,
+  loadActiveContext,
+  deleteActiveContext,
+  type ThreadActiveContext,
+} from "./active-context";
+
 // workflow runtime state
 export {
   getActiveStreamId,
