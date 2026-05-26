@@ -18,7 +18,10 @@ function makeTool(executeImpl: (input: unknown) => unknown) {
   return {
     description: "fake",
     inputSchema: { _zod: true } as unknown,
-    execute: async (input: unknown) => executeImpl(input),
+    execute: async (input: unknown, _options: unknown) => {
+      void _options;
+      return executeImpl(input);
+    },
   };
 }
 

@@ -22,7 +22,8 @@ export type HookEvent =
   | "PreToolUse"
   | "PostToolUse"
   | "UserPromptSubmit"
-  | "SessionStart";
+  | "SessionStart"
+  | "Stop";
 
 /** 工具事件的共同字段。`input` 是 LLM 提供的入参，shape 由具体 tool 决定。 */
 export interface PreToolUsePayload {
@@ -58,11 +59,20 @@ export interface SessionStartPayload {
   sessionId: string;
 }
 
+export interface StopPayload {
+  event: "Stop";
+  sessionId: string;
+  finishReason?: string;
+  step?: number;
+  lastAssistantMessage?: unknown;
+}
+
 export type HookPayload =
   | PreToolUsePayload
   | PostToolUsePayload
   | UserPromptSubmitPayload
-  | SessionStartPayload;
+  | SessionStartPayload
+  | StopPayload;
 
 /** 按事件名查 payload 形状（给泛型 API 用）。 */
 export type HookPayloadFor<E extends HookEvent> = Extract<HookPayload, { event: E }>;
@@ -105,10 +115,12 @@ export interface HookContext {
  * 返回 `void` / `undefined` 等价于"我啥都没说"（纯观察）。这让日志型 hook
  * 不用强行返回 `{}`。
  */
-export type HookHandler<E extends HookEvent> = (
-  payload: HookPayloadFor<E>,
-  ctx: HookContext,
-) => HookResult | void | Promise<HookResult | void>;
+export type HookHandler<E extends HookEvent> = {
+  bivarianceHack(
+    payload: HookPayloadFor<E>,
+    ctx: HookContext,
+  ): HookResult | void | Promise<HookResult | void>;
+}["bivarianceHack"];
 
 /**
  * `defineHook` 的输入形状。`matcher` 是字符串正则（compile 在 register 时做一次）。
@@ -129,6 +141,7 @@ export interface RegisteredHook<E extends HookEvent = HookEvent> {
   event: E;
   name: string;
   matcher?: RegExp;
+  timeoutMs?: number;
   handler: HookHandler<E>;
 }
 

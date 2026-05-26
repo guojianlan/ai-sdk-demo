@@ -43,7 +43,7 @@ export class HookRegistry {
 
   register<E extends HookEvent>(hook: RegisteredHook<E>): void {
     const bucket = this.hooks.get(hook.event) ?? [];
-    bucket.push(hook as RegisteredHook);
+    bucket.push(hook as unknown as RegisteredHook);
     this.hooks.set(hook.event, bucket);
   }
 
@@ -57,7 +57,7 @@ export class HookRegistry {
   }
 
   list<E extends HookEvent>(event: E): RegisteredHook<E>[] {
-    return (this.hooks.get(event) ?? []) as RegisteredHook<E>[];
+    return (this.hooks.get(event) ?? []) as unknown as RegisteredHook<E>[];
   }
 
   clear(): void {
@@ -117,7 +117,6 @@ export async function runHooks<E extends HookEvent>(
   };
 
   const target = matcherTarget(payload);
-  const timeoutMs = ctx.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   const handlerCtx: HookContext = { signal: ctx.signal, sessionId: ctx.sessionId };
 
   for (const hook of registry.list(event)) {
@@ -127,6 +126,7 @@ export async function runHooks<E extends HookEvent>(
     }
 
     let outcome: HookResult | void | typeof TIMEOUT_SENTINEL;
+    const timeoutMs = hook.timeoutMs ?? ctx.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
     try {
       outcome = await runWithTimeout(
         () => hook.handler(payload, handlerCtx),

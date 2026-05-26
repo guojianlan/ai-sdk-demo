@@ -4,11 +4,16 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildCommandHookRegistryFromProjectSettings,
   buildHookRegistryFromSettings,
   listKnownHookNames,
   wrapToolsetWithHooks,
 } from "@/lib/hooks";
-import { loadSettings, type Settings } from "@/lib/permissions";
+import {
+  loadProjectSettings,
+  loadSettings,
+  type Settings,
+} from "@/lib/permissions";
 import { toolOk } from "@/lib/tool-result";
 
 /**
@@ -39,8 +44,9 @@ function makeWriteTool(spy: () => unknown) {
   return {
     description: "fake write",
     inputSchema: { _zod: true } as unknown,
-    execute: async (input: unknown) => {
+    execute: async (input: unknown, _options: unknown) => {
       void input;
+      void _options;
       return spy();
     },
   };
@@ -152,5 +158,31 @@ describe("settings.json 端到端：开关 dotenv-blocklist", () => {
     await writeSettings(tmpProject, { hooks: {} });
     const result = await runWriteWithCurrentSettings();
     expect(result).toEqual(toolOk({ wrote: true }));
+  });
+
+  it("项目级 settings 可以声明 command Stop hook", async () => {
+    await writeSettings(tmpProject, {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: "npm run lint",
+                timeout: 120,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const settings = loadProjectSettings(tmpProject);
+    const reg = buildCommandHookRegistryFromProjectSettings(settings, {
+      cwd: tmpProject,
+    });
+
+    expect(reg.list("Stop")).toHaveLength(1);
+    expect(reg.list("Stop")[0].name).toContain("Stop:command:0:npm run lint");
   });
 });

@@ -5,7 +5,10 @@
 
 export {
   EMPTY_SETTINGS,
+  type CommandHookGroup,
+  type CommandHookHandlerConfig,
   type HookDeclaration,
+  type HookConfigEntry,
   type HooksConfig,
   hookDeclarationSchema,
   hooksConfigSchema,
@@ -19,7 +22,7 @@ export {
   settingsSchema,
 } from "./types";
 
-export { listSettingsCandidatePaths, loadSettings } from "./settings";
+export { listSettingsCandidatePaths, loadProjectSettings, loadSettings } from "./settings";
 
 export { evaluatePermission, ruleMatches } from "./evaluate";
 

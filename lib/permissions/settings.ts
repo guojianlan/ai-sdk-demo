@@ -160,6 +160,7 @@ function mergeHooksConfig(
     "PostToolUse",
     "UserPromptSubmit",
     "SessionStart",
+    "Stop",
   ];
   const out: HooksConfig = {};
   for (const event of events) {
@@ -196,6 +197,22 @@ export function loadSettings(cwd: string = process.cwd()): Settings {
     if (projSettings) merged = mergeSettings(merged, projSettings);
   }
 
+  return merged;
+}
+
+/**
+ * 只加载项目层级 settings，不包含用户全局 settings。
+ *
+ * 用途：command hooks 这类能执行本地命令的能力必须由项目显式启用，不能从
+ * `~/.local-agent/settings.json` 全局继承到所有仓库。
+ */
+export function loadProjectSettings(cwd: string = process.cwd()): Settings {
+  let merged: Settings = EMPTY_SETTINGS;
+  const projectPaths = findProjectSettingsPaths(cwd);
+  for (let i = projectPaths.length - 1; i >= 0; i--) {
+    const projSettings = readAndParseSettings(projectPaths[i]);
+    if (projSettings) merged = mergeSettings(merged, projSettings);
+  }
   return merged;
 }
 

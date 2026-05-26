@@ -67,7 +67,8 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
  * `matcher` 是字符串正则，覆盖 hook 内部的默认 matcher（如 dotenv-blocklist 默
  * 认 `^(write|edit|read)$`）。不传 → 用 factory 默认。
  */
-export const hookDeclarationSchema = z.object({
+export const namedHookDeclarationSchema = z.object({
+  type: z.literal("registered").optional(),
   name: z
     .string()
     .min(1)
@@ -81,13 +82,35 @@ export const hookDeclarationSchema = z.object({
       "Regex string overriding the hook's default tool-name matcher. Tool events only.",
     ),
 });
-export type HookDeclaration = z.infer<typeof hookDeclarationSchema>;
+export type HookDeclaration = z.infer<typeof namedHookDeclarationSchema>;
+export const hookDeclarationSchema = namedHookDeclarationSchema;
+
+export const commandHookHandlerSchema = z.object({
+  type: z.literal("command"),
+  command: z.string().min(1),
+  timeout: z.number().int().positive().max(600).optional(),
+  statusMessage: z.string().min(1).optional(),
+});
+export type CommandHookHandlerConfig = z.infer<typeof commandHookHandlerSchema>;
+
+export const commandHookGroupSchema = z.object({
+  matcher: z.string().optional(),
+  hooks: z.array(commandHookHandlerSchema).min(1),
+});
+export type CommandHookGroup = z.infer<typeof commandHookGroupSchema>;
+
+export const hookConfigEntrySchema = z.union([
+  namedHookDeclarationSchema,
+  commandHookGroupSchema,
+]);
+export type HookConfigEntry = z.infer<typeof hookConfigEntrySchema>;
 
 export const hooksConfigSchema = z.object({
-  PreToolUse: z.array(hookDeclarationSchema).optional(),
-  PostToolUse: z.array(hookDeclarationSchema).optional(),
-  UserPromptSubmit: z.array(hookDeclarationSchema).optional(),
-  SessionStart: z.array(hookDeclarationSchema).optional(),
+  PreToolUse: z.array(hookConfigEntrySchema).optional(),
+  PostToolUse: z.array(hookConfigEntrySchema).optional(),
+  UserPromptSubmit: z.array(hookConfigEntrySchema).optional(),
+  SessionStart: z.array(hookConfigEntrySchema).optional(),
+  Stop: z.array(hookConfigEntrySchema).optional(),
 });
 export type HooksConfig = z.infer<typeof hooksConfigSchema>;
 

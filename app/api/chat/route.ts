@@ -26,13 +26,14 @@ import {
   upsertThread,
 } from "@/lib/persistence";
 import {
+  buildCommandHookRegistryFromProjectSettings,
   buildHookRegistryFromSettings,
   copyHooksInto,
   defaultHookRegistry,
   HookRegistry,
   runHooks,
 } from "@/lib/hooks";
-import { loadSettings } from "@/lib/permissions";
+import { loadProjectSettings, loadSettings } from "@/lib/permissions";
 import {
   buildCompactionNotice,
   compactMessages,
@@ -148,11 +149,18 @@ export async function POST(request: Request) {
     fullSanitized.some((m) => m.role === "user");
 
   const settings = loadSettings(workspaceRoot);
+  const projectSettings = loadProjectSettings(workspaceRoot);
   const promptHookRegistry = new HookRegistry();
   copyHooksInto(promptHookRegistry, defaultHookRegistry);
   copyHooksInto(
     promptHookRegistry,
     buildHookRegistryFromSettings(settings),
+  );
+  copyHooksInto(
+    promptHookRegistry,
+    buildCommandHookRegistryFromProjectSettings(projectSettings, {
+      cwd: workspaceRoot,
+    }),
   );
 
   const hookContexts: string[] = [];

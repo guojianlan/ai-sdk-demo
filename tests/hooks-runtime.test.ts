@@ -189,4 +189,31 @@ describe("HookRegistry + runHooks", () => {
     expect(result.decision).toBe("ask");
     expect(result.reason).toBe("please confirm");
   });
+
+  it("Stop 事件能用 command-style block 语义把反馈返回给调用方", async () => {
+    const reg = new HookRegistry();
+    reg.register(
+      defineHook({
+        event: "Stop",
+        name: "final-check",
+        handler: () => ({
+          decision: "deny",
+          reason: "npm run lint failed",
+          additionalContexts: ["fix lint before final response"],
+        }),
+      }),
+    );
+
+    const result = await runHooks(reg, "Stop", {
+      event: "Stop",
+      sessionId: "chat-1",
+      finishReason: "stop",
+      step: 2,
+      lastAssistantMessage: { role: "assistant" },
+    });
+    expect(result.decision).toBe("deny");
+    expect(result.deniedBy).toBe("final-check");
+    expect(result.reason).toBe("npm run lint failed");
+    expect(result.additionalContexts).toEqual(["fix lint before final response"]);
+  });
 });

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { instrumentModel } from "@/lib/devtools";
 import { gateway, gatewayModelId } from "@/lib/gateway";
 import {
+  buildCommandHookRegistryFromProjectSettings,
   buildHookRegistryFromSettings,
   copyHooksInto,
   defaultHookRegistry,
@@ -12,6 +13,7 @@ import {
 } from "@/lib/hooks";
 import {
   DEFAULT_PERMISSION_MODE,
+  loadProjectSettings,
   loadSettings,
   type PermissionMode,
 } from "@/lib/permissions";
@@ -144,6 +146,13 @@ export async function runSubAgent(args: {
   copyHooksInto(
     subagentHookRegistry,
     buildHookRegistryFromSettings(subagentSettings),
+  );
+  copyHooksInto(
+    subagentHookRegistry,
+    buildCommandHookRegistryFromProjectSettings(
+      loadProjectSettings(args.workspaceRoot),
+      { cwd: args.workspaceRoot },
+    ),
   );
   const hookedTools = wrapToolsetWithHooks(tools, subagentHookRegistry, {
     sessionId: args.parentChatId,

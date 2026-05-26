@@ -1,7 +1,14 @@
-import type { HookDeclaration, HooksConfig, Settings } from "@/lib/permissions";
+import type {
+  CommandHookGroup,
+  HookConfigEntry,
+  HookDeclaration,
+  HooksConfig,
+  Settings,
+} from "@/lib/permissions";
 
 import { dotenvBlocklistHook } from "./builtin/dotenv-blocklist";
 import { toolLoggingHook } from "./builtin/tool-logging";
+import { commandHook } from "./command";
 import { HookRegistry } from "./runtime";
 import type { HookEvent, RegisteredHook } from "./types";
 
@@ -21,7 +28,7 @@ import type { HookEvent, RegisteredHook } from "./types";
 interface HookFactoryEntry {
   /** 这个 hook 服务的事件；settings 必须把它挂在同事件桶下。 */
   event: HookEvent;
-  create: (opts: { matcher?: string; name?: string }) => RegisteredHook;
+  create: (opts: { matcher?: string; name?: string }) => RegisteredHook<HookEvent>;
 }
 
 /**
@@ -31,11 +38,11 @@ interface HookFactoryEntry {
 const HOOK_FACTORIES: Record<string, HookFactoryEntry> = {
   "dotenv-blocklist": {
     event: "PreToolUse",
-    create: (opts) => dotenvBlocklistHook(opts),
+    create: (opts) => dotenvBlocklistHook(opts) as unknown as RegisteredHook,
   },
   "tool-logging": {
     event: "PostToolUse",
-    create: (opts) => toolLoggingHook(opts),
+    create: (opts) => toolLoggingHook(opts) as unknown as RegisteredHook,
   },
 };
 
@@ -70,15 +77,54 @@ export function buildHookRegistryFromSettings(settings: Settings): HookRegistry 
     "PostToolUse",
     "UserPromptSubmit",
     "SessionStart",
+    "Stop",
   ];
 
   for (const event of events) {
     const declarations = cfg[event];
     if (!declarations || declarations.length === 0) continue;
     for (const decl of declarations) {
-      registerOne(reg, event, decl);
+      if (isNamedHookDeclaration(decl)) {
+        registerOne(reg, event, decl);
+      }
     }
   }
+  return reg;
+}
+
+/**
+ * 从项目级 settings 构建 command hook registry。
+ *
+ * 安全边界：调用方必须传入 `loadProjectSettings(cwd)` 的结果，不应传全局合并后的
+ * `loadSettings(cwd)`。这样 `~/.local-agent/settings.json` 不能把 command hook
+ * 默认注入所有项目。
+ */
+export function buildCommandHookRegistryFromProjectSettings(
+  settings: Settings,
+  opts: { cwd: string },
+): HookRegistry {
+  const reg = new HookRegistry();
+  const cfg = settings.hooks;
+  if (!cfg) return reg;
+
+  const events: Array<keyof HooksConfig> = [
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "SessionStart",
+    "Stop",
+  ];
+
+  for (const event of events) {
+    const declarations = cfg[event];
+    if (!declarations || declarations.length === 0) continue;
+    for (const decl of declarations) {
+      if (isCommandHookGroup(decl)) {
+        registerCommandGroup(reg, event, decl, opts.cwd);
+      }
+    }
+  }
+
   return reg;
 }
 
@@ -117,10 +163,40 @@ export function copyHooksInto(dest: HookRegistry, src: HookRegistry): void {
     "PostToolUse",
     "UserPromptSubmit",
     "SessionStart",
+    "Stop",
   ];
   for (const event of events) {
     for (const hook of src.list(event)) {
       dest.register(hook);
     }
   }
+}
+
+function isNamedHookDeclaration(entry: HookConfigEntry): entry is HookDeclaration {
+  return "name" in entry;
+}
+
+function isCommandHookGroup(entry: HookConfigEntry): entry is CommandHookGroup {
+  return "hooks" in entry;
+}
+
+function registerCommandGroup(
+  reg: HookRegistry,
+  event: HookEvent,
+  group: CommandHookGroup,
+  cwd: string,
+): void {
+  group.hooks.forEach((handler, index) => {
+    reg.register(
+      commandHook({
+        event,
+        matcher: group.matcher,
+        command: handler.command,
+        timeoutSec: handler.timeout,
+        statusMessage: handler.statusMessage,
+        cwd,
+        name: `${event}:command:${index}:${handler.command}`,
+      }),
+    );
+  });
 }

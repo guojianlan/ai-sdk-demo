@@ -71,7 +71,11 @@ describe("toolLoggingHook (PostToolUse)", () => {
         write: {
           description: "fake",
           inputSchema: {},
-          execute: async () => toolOk({ wrote: true }),
+          execute: async (_input: unknown, _options: unknown) => {
+            void _input;
+            void _options;
+            return toolOk({ wrote: true });
+          },
         },
       },
       reg,
@@ -94,7 +98,11 @@ describe("toolLoggingHook (PostToolUse)", () => {
         broken: {
           description: "fake",
           inputSchema: {},
-          execute: async () => toolErr("boom"),
+          execute: async (_input: unknown, _options: unknown) => {
+            void _input;
+            void _options;
+            return toolErr("boom");
+          },
         },
       },
       reg,

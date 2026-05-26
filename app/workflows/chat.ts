@@ -204,7 +204,20 @@ async function runAgentLoop(
     );
 
     if (result.aborted) break;
-    if (!isToolCallContinuation) break;
+    if (!isToolCallContinuation) {
+      const stopContexts = await runStopHooksForStep(
+        options,
+        result.finishReason,
+        result.responseMessage,
+        step + 1,
+      );
+      if (stopContexts.length > 0 && step + 1 < limit) {
+        hookContextsForNextStep = [...hookContextsForNextStep, ...stopContexts];
+        finalFinishReason = undefined;
+        continue;
+      }
+      break;
+    }
     if (needsPause) break;
 
     if (step + 1 >= limit) {
@@ -230,6 +243,58 @@ async function runAgentLoop(
   await sendFinishChunk(finalFinishReason ?? "stop");
 }
 
+async function runStopHooksForStep(
+  options: ChatWorkflowOptions,
+  finishReason: FinishReason | undefined,
+  lastAssistantMessage: UIMessage | null,
+  step: number,
+): Promise<string[]> {
+  "use step";
+
+  const { loadProjectSettings, loadSettings } = await import("@/lib/permissions");
+  const {
+    buildCommandHookRegistryFromProjectSettings,
+    buildHookRegistryFromSettings,
+    copyHooksInto,
+    defaultHookRegistry,
+    HookRegistry,
+    runHooks,
+  } = await import("@/lib/hooks");
+
+  const registry = new HookRegistry();
+  copyHooksInto(registry, defaultHookRegistry);
+  copyHooksInto(registry, buildHookRegistryFromSettings(loadSettings(options.workspaceRoot)));
+  copyHooksInto(
+    registry,
+    buildCommandHookRegistryFromProjectSettings(
+      loadProjectSettings(options.workspaceRoot),
+      { cwd: options.workspaceRoot },
+    ),
+  );
+
+  const stop = await runHooks(
+    registry,
+    "Stop",
+    {
+      event: "Stop",
+      sessionId: options.chatId,
+      finishReason: finishReason ?? "stop",
+      step,
+      lastAssistantMessage,
+    },
+    { sessionId: options.chatId },
+  );
+
+  if (stop.decision !== "deny") return [];
+  return [
+    stop.reason
+      ? `Stop hook blocked completion: ${stop.reason}`
+      : "Stop hook blocked completion.",
+    ...stop.additionalContexts,
+    ...stop.systemMessages,
+  ];
+}
+
 async function runAgentStep(
   options: ChatWorkflowOptions,
   workflowRunId: string,
@@ -249,7 +314,7 @@ async function runAgentStep(
     try {
       const { createWeatherMCPClient } = await import("@/lib/mcp/weather-client");
       const mcp = await createWeatherMCPClient();
-      mcpTools = await mcp.tools();
+      mcpTools = (await mcp.tools()) as ToolSet;
       closeMcp = () => mcp.close();
     } catch (error) {
       console.warn(
@@ -272,8 +337,10 @@ async function runAgentStep(
   // - memoryEnabled=false：过滤 memory_write
   // 两个条件可叠加。settings 通过 dynamic import 取 —— chat.ts 在 workflow 插件
   // 上下文里跑，barrel 静态 import 含 node:fs 的模块会被拒。
-  const { isMemoryEnabled, loadSettings } = await import("@/lib/permissions");
+  const { isMemoryEnabled, loadProjectSettings, loadSettings } =
+    await import("@/lib/permissions");
   const settings = loadSettings(options.workspaceRoot);
+  const projectSettings = loadProjectSettings(options.workspaceRoot);
   const memoryEnabled = isMemoryEnabled(settings);
 
   const baseTools: ToolSet = hasWorkspaceTools
@@ -305,6 +372,7 @@ async function runAgentStep(
   //   2. 从 settings.hooks 还原的声明式 hook（如 dotenv-blocklist 开关）
   // 两者按事件 concat 注入新 registry，不动全局 default。
   const {
+    buildCommandHookRegistryFromProjectSettings,
     buildHookRegistryFromSettings,
     copyHooksInto,
     defaultHookRegistry,
@@ -314,6 +382,12 @@ async function runAgentStep(
   const combinedRegistry = new HookRegistry();
   copyHooksInto(combinedRegistry, defaultHookRegistry);
   copyHooksInto(combinedRegistry, buildHookRegistryFromSettings(settings));
+  copyHooksInto(
+    combinedRegistry,
+    buildCommandHookRegistryFromProjectSettings(projectSettings, {
+      cwd: options.workspaceRoot,
+    }),
+  );
   const postToolHookContexts: string[] = [];
   const hookedTools = wrapToolsetWithHooks(tools, combinedRegistry, {
     sessionId: options.chatId,

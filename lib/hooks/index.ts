@@ -6,6 +6,7 @@ export { defaultHookRegistry } from "./default-registry";
 export { dotenvBlocklistHook } from "./builtin/dotenv-blocklist";
 export { toolLoggingHook } from "./builtin/tool-logging";
 export {
+  buildCommandHookRegistryFromProjectSettings,
   buildHookRegistryFromSettings,
   copyHooksInto,
   listKnownHookNames,
@@ -23,6 +24,7 @@ export type {
   PreToolUsePayload,
   RegisteredHook,
   SessionStartPayload,
+  StopPayload,
   UserPromptSubmitPayload,
 } from "./types";
 export type { HookRunContext } from "./runtime";
