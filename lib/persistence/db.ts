@@ -32,6 +32,10 @@ type GlobalWithDb = typeof globalThis & { [GLOBAL_KEY]?: DatabaseType };
 export function getDb(): DatabaseType {
   const g = globalThis as GlobalWithDb;
   if (g[GLOBAL_KEY]) {
+    // Next.js dev server can hot-reload code while keeping globalThis alive.
+    // Re-check migrations on reused handles so newly added tables/columns are
+    // applied without requiring a manual server restart.
+    applyMigrations(g[GLOBAL_KEY]);
     return g[GLOBAL_KEY];
   }
 

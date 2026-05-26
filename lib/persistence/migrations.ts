@@ -22,6 +22,20 @@ type Migration = {
   sql: string;
 };
 
+const THREAD_ACTIVE_CONTEXT_SQL = `
+  CREATE TABLE IF NOT EXISTS thread_active_context (
+    thread_id            TEXT PRIMARY KEY,
+    summary              TEXT NOT NULL,
+    replacement_messages TEXT NOT NULL,
+    compacted_count      INTEGER NOT NULL,
+    source_message_count INTEGER NOT NULL,
+    tokens_before        INTEGER NOT NULL,
+    tokens_after         INTEGER NOT NULL,
+    strategy             TEXT NOT NULL,
+    updated_at           INTEGER NOT NULL
+  );
+`;
+
 /**
  * 历史 migrations。**只追加，不修改**。
  *
@@ -136,19 +150,7 @@ const MIGRATIONS: Migration[] = [
   {
     version: 6,
     name: "add-thread-active-context",
-    sql: `
-      CREATE TABLE IF NOT EXISTS thread_active_context (
-        thread_id            TEXT PRIMARY KEY,
-        summary              TEXT NOT NULL,
-        replacement_messages TEXT NOT NULL,
-        compacted_count      INTEGER NOT NULL,
-        source_message_count INTEGER NOT NULL,
-        tokens_before        INTEGER NOT NULL,
-        tokens_after         INTEGER NOT NULL,
-        strategy             TEXT NOT NULL,
-        updated_at           INTEGER NOT NULL
-      );
-    `,
+    sql: THREAD_ACTIVE_CONTEXT_SQL,
   },
 ];
 
@@ -158,6 +160,7 @@ export function applyMigrations(db: DatabaseType): void {
   const targetVersion = MIGRATIONS.at(-1)?.version ?? 0;
 
   if (currentVersion >= targetVersion) {
+    ensureSchemaInvariants(db);
     return;
   }
 
@@ -182,4 +185,15 @@ export function applyMigrations(db: DatabaseType): void {
       );
     }
   }
+
+  ensureSchemaInvariants(db);
+}
+
+/**
+ * Dev hot reload or older experimental DBs can leave `user_version` ahead of
+ * the actual schema. Keep invariants idempotent so a missing table is repaired
+ * even when no numbered migration is considered pending.
+ */
+function ensureSchemaInvariants(db: DatabaseType): void {
+  db.exec(THREAD_ACTIVE_CONTEXT_SQL);
 }
