@@ -724,6 +724,7 @@ function FlowEditor({
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([]);
   const [panning, setPanning] = useState(false);
+  const [detailNodeId, setDetailNodeId] = useState("");
   const [selectionBox, setSelectionBox] = useState<{
     x: number;
     y: number;
@@ -743,6 +744,13 @@ function FlowEditor({
   const selectedNodeRun = selectedNode
     ? activeRun?.nodeRuns.find((run) => run.nodeId === selectedNode.id) ?? null
     : null;
+  const detailNode = detailNodeId
+    ? graph.nodes.find((node) => node.id === detailNodeId)
+    : undefined;
+  const detailNodeRun = detailNode
+    ? activeRun?.nodeRuns.find((run) => run.nodeId === detailNode.id) ?? null
+    : null;
+
   function clampNodePosition(position: { x: number; y: number }) {
     return {
       x: clamp(Math.round(position.x), 0, CANVAS_WIDTH - NODE_WIDTH),
@@ -1201,6 +1209,7 @@ function FlowEditor({
               selected={selectedNodeIdSet.has(node.id)}
               dragging={draggingNodeIds.includes(node.id)}
               nodeRun={activeRun?.nodeRuns.find((run) => run.nodeId === node.id)}
+              onOpenDetail={() => setDetailNodeId(node.id)}
               onPointerDown={(event) => handleNodePointerDown(event, node)}
               onPointerMove={handleNodePointerMove}
               onPointerUp={finishNodeDrag}
@@ -1243,7 +1252,16 @@ function FlowEditor({
         onSaveEdge={onSaveEdge}
         onDeleteNode={onDeleteNode}
         onDeleteEdge={onDeleteEdge}
+        onOpenNodeDetail={(nodeId) => setDetailNodeId(nodeId)}
       />
+      {detailNode && (
+        <NodeRunDetailDialog
+          node={detailNode}
+          nodeRun={detailNodeRun}
+          activeRun={activeRun}
+          onClose={() => setDetailNodeId("")}
+        />
+      )}
     </div>
   );
 }
@@ -1253,6 +1271,7 @@ function FlowNodeCard({
   selected,
   dragging,
   nodeRun,
+  onOpenDetail,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -1262,6 +1281,7 @@ function FlowNodeCard({
   selected: boolean;
   dragging: boolean;
   nodeRun?: FlowNodeRun;
+  onOpenDetail: () => void;
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -1275,6 +1295,7 @@ function FlowNodeCard({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onDoubleClick={onOpenDetail}
       className={[
         "absolute w-48 touch-none rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
         dragging ? "cursor-grabbing shadow-md" : "cursor-grab",
@@ -1482,6 +1503,7 @@ function FlowInspector({
   onSaveEdge,
   onDeleteNode,
   onDeleteEdge,
+  onOpenNodeDetail,
 }: {
   selectedNode: FlowNode | undefined;
   selectedEdge: FlowEdge | undefined;
@@ -1509,6 +1531,7 @@ function FlowInspector({
   onSaveEdge: (params: { edgeId: string; condition: unknown | null }) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
+  onOpenNodeDetail: (nodeId: string) => void;
 }) {
   const selectedEdgeSource = selectedEdge
     ? nodes.find((node) => node.id === selectedEdge.sourceNodeId)
@@ -1621,16 +1644,25 @@ function FlowInspector({
               {selectedNodeCount > 1 ? ` · ${selectedNodeCount} selected` : ""}
             </Eyebrow>
             {selectedNode && (
-              <button
-                type="button"
-                onClick={() => onDeleteNode(selectedNode.id)}
-                disabled={
-                  selectedNode.type === "start" || selectedNode.type === "end"
-                }
-                className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400 disabled:hover:bg-white"
-              >
-                Delete
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onOpenNodeDetail(selectedNode.id)}
+                  className="h-8 rounded-md border border-slate-900 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-900 hover:bg-slate-50"
+                >
+                  Detail
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteNode(selectedNode.id)}
+                  disabled={
+                    selectedNode.type === "start" || selectedNode.type === "end"
+                  }
+                  className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400 disabled:hover:bg-white"
+                >
+                  Delete
+                </button>
+              </div>
             )}
           </div>
           {selectedNode ? (
@@ -1669,6 +1701,133 @@ function FlowInspector({
         </section>
       </div>
     </aside>
+  );
+}
+
+function NodeRunDetailDialog({
+  node,
+  nodeRun,
+  activeRun,
+  onClose,
+}: {
+  node: FlowNode;
+  nodeRun: FlowNodeRun | null;
+  activeRun: FlowRunWithNodes | null;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      data-flow-node-detail
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-[2px] sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${node.title} node detail`}
+    >
+      <div className="w-full max-w-5xl rounded-md border border-slate-900 bg-white shadow-xl">
+        <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+              Node Detail · {node.type}
+            </div>
+            <h3 className="mt-1 text-xl font-semibold tracking-tight text-slate-900">
+              {node.title}
+            </h3>
+            <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+              <span>Node {node.id.slice(0, 8)}</span>
+              <span>Run {activeRun?.run.id.slice(0, 8) ?? "none"}</span>
+              <span>Status {nodeRun?.status ?? "not-run"}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 rounded-md border border-slate-900 bg-white px-4 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-900 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid max-h-[calc(100vh-10rem)] min-h-0 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <section className="rounded-md border border-slate-200 p-3">
+              <Eyebrow>Run State</Eyebrow>
+              <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                <div>
+                  <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    Started
+                  </dt>
+                  <dd>
+                    {nodeRun
+                      ? formatTimestamp(new Date(nodeRun.startedAt).toISOString())
+                      : "none"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    Finished
+                  </dt>
+                  <dd>
+                    {nodeRun?.finishedAt
+                      ? formatTimestamp(new Date(nodeRun.finishedAt).toISOString())
+                      : "none"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    Flow Run
+                  </dt>
+                  <dd className="font-mono text-xs">
+                    {activeRun?.run.status ?? "none"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    Transcript
+                  </dt>
+                  <dd className="font-mono text-xs">
+                    {nodeRun?.transcriptThreadId?.slice(0, 8) ?? "none"}
+                  </dd>
+                </div>
+              </dl>
+              {nodeRun?.error && (
+                <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+                  {nodeRun.error}
+                </div>
+              )}
+            </section>
+            <JsonBlock
+              label="Node Config"
+              value={node.config}
+              heightClassName="max-h-80"
+            />
+            <JsonBlock
+              label="Input"
+              value={nodeRun?.input ?? null}
+              heightClassName="max-h-80"
+            />
+            <JsonBlock
+              label="Output"
+              value={nodeRun?.output ?? null}
+              heightClassName="max-h-80"
+            />
+          </div>
+
+          <div className="space-y-4">
+            <JsonBlock
+              label="Trace"
+              value={nodeRun?.trace ?? null}
+              heightClassName="max-h-96"
+            />
+            <section className="rounded-md border border-slate-200 p-3">
+              <TranscriptLoader
+                key={nodeRun?.transcriptThreadId ?? "detail-empty"}
+                threadId={nodeRun?.transcriptThreadId ?? null}
+              />
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2110,13 +2269,26 @@ function InputMappingEditor({
   );
 }
 
-function JsonBlock({ label, value }: { label: string; value: unknown }) {
+function JsonBlock({
+  label,
+  value,
+  heightClassName = "max-h-48",
+}: {
+  label: string;
+  value: unknown;
+  heightClassName?: string;
+}) {
   return (
     <div>
       <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
         {label}
       </div>
-      <pre className="max-h-48 overflow-auto rounded-md bg-slate-950 p-2 text-xs leading-5 text-slate-100">
+      <pre
+        className={[
+          heightClassName,
+          "overflow-auto rounded-md bg-slate-950 p-2 text-xs leading-5 text-slate-100",
+        ].join(" ")}
+      >
         {JSON.stringify(value, null, 2)}
       </pre>
     </div>

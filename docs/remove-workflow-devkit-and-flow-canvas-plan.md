@@ -756,6 +756,11 @@ Completed:
   - modifier-dragging empty canvas space draws a selection rectangle and selects intersecting nodes;
   - dragging any selected node moves the selected group together;
   - group drags persist each moved node through the existing node `PATCH` route.
+- Added node run detail inspection:
+  - the Node Inspector now exposes a `Detail` action for the selected node;
+  - double-clicking a node on the canvas opens the same detail view;
+  - the detail view shows the current active run state, node config, input, output, trace, error, and transcript;
+  - hidden reasoning remains excluded because only the existing persisted trace and safe transcript are displayed.
 
 Verified:
 
@@ -790,6 +795,9 @@ Verified:
 - `npx tsc --noEmit` after adding canvas multi-select and group dragging.
 - `npm run lint` after adding canvas multi-select and group dragging.
 - Playwright smoke: opened Flows on `127.0.0.1:3002`, selected two nodes with a selection rectangle, dragged the selected group, verified both nodes persisted their new positions through `GET /api/flows/[flowId]`, archived the temporary flow, and captured `/tmp/ai-sdk-demo-flow-multiselect-ui.png`.
+- `npx tsc --noEmit` after adding node run detail inspection.
+- `npm run lint` after adding node run detail inspection.
+- Playwright smoke: created and ran a default `Start -> End` flow, opened Flows on `127.0.0.1:3002`, double-clicked the Start node, verified the detail view showed run status and persisted input/output content, closed the detail view, archived the temporary flow, and captured `/tmp/ai-sdk-demo-flow-node-detail-ui.png`.
 
 Remaining:
 
