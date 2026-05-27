@@ -716,6 +716,12 @@ Completed:
   - transform nodes expose output path editing;
   - condition nodes expose condition JSON editing;
   - the connect toolbar can attach an edge condition JSON object.
+- Added prompt node transcript linkage:
+  - every successful prompt node run creates a hidden archived chat thread;
+  - `flow_node_runs.transcript_thread_id` stores that thread id;
+  - the transcript reuses the existing `threads` / `messages` persistence and `/api/chat/history?id=...` reader;
+  - the node inspector loads and displays the prompt node user prompt and visible assistant output;
+  - hidden reasoning is not stored; the transcript contains only safe visible prompt/output content.
 
 Verified:
 
@@ -736,9 +742,11 @@ Verified:
 - Playwright smoke: edited a prompt node title/prompt/schema in the inspector, saved it through the UI, and verified the persisted config through `GET /api/flows/[flowId]`; screenshot captured at `/tmp/ai-sdk-demo-flow-config-ui.png`
 - API smoke: ran Start -> Transform -> Condition -> branch -> End, verified mapped JSON output and that only the matched branch executed
 - Playwright smoke: edited a transform node input mapping/output path in the inspector, saved it through the UI, and verified the PATCH response; screenshot captured at `/tmp/ai-sdk-demo-flow-mapping-ui.png`
+- API smoke: ran a prompt node, verified `transcriptThreadId`, and loaded two transcript messages through `/api/chat/history`
+- Playwright smoke: opened a completed prompt node in the Flows inspector and verified transcript output was visible; screenshot captured at `/tmp/ai-sdk-demo-flow-transcript-ui.png`
+- API smoke: verified archived transcript threads do not appear in the visible sessions list
 
 Remaining:
 
-- Add full chat-thread linkage for prompt node runs; current implementation stores a safe trace, not a reusable chat transcript.
 - Add node/edge deletion, node drag/pan/zoom, and richer infinite-canvas interactions.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.

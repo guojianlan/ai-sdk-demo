@@ -1,5 +1,6 @@
 "use client";
 
+import type { UIMessage } from "ai";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -10,6 +11,7 @@ import {
   fetchFlowRuns,
   fetchFlowGraph,
   fetchFlows,
+  fetchTranscriptMessages,
   runFlowOnApi,
   updateFlowNodeOnApi,
   type FlowDefinition,
@@ -726,6 +728,10 @@ function FlowInspector({
                 value={selectedNodeRun?.output ?? null}
               />
               <JsonBlock label="Trace" value={selectedNodeRun?.trace ?? null} />
+              <TranscriptLoader
+                key={selectedNodeRun?.transcriptThreadId ?? "empty"}
+                threadId={selectedNodeRun?.transcriptThreadId ?? null}
+              />
               {selectedNodeRun?.error && (
                 <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
                   {selectedNodeRun.error}
@@ -738,6 +744,86 @@ function FlowInspector({
         </section>
       </div>
     </aside>
+  );
+}
+
+function TranscriptLoader({ threadId }: { threadId: string | null }) {
+  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!threadId) return;
+    let cancelled = false;
+    void fetchTranscriptMessages(threadId)
+      .then((nextMessages) => {
+        if (cancelled) return;
+        setMessages(nextMessages);
+        setError("");
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setMessages([]);
+        setError(
+          loadError instanceof Error ? loadError.message : "Transcript 加载失败",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
+
+  return <TranscriptBlock messages={messages} error={error} threadId={threadId} />;
+}
+
+function TranscriptBlock({
+  messages,
+  error,
+  threadId,
+}: {
+  messages: UIMessage[];
+  error: string;
+  threadId: string | null;
+}) {
+  if (!threadId) {
+    return (
+      <div className="rounded-md border border-dashed border-slate-300 px-3 py-4 text-sm text-slate-500">
+        暂无 transcript
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+        Transcript
+      </div>
+      {error ? (
+        <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+          {error}
+        </div>
+      ) : (
+        <div className="max-h-80 space-y-2 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className="rounded-md border border-slate-200 bg-white p-2"
+            >
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                {message.role}
+              </div>
+              <div className="whitespace-pre-wrap text-xs leading-5 text-slate-800">
+                {messageToText(message)}
+              </div>
+            </div>
+          ))}
+          {messages.length === 0 && (
+            <div className="py-4 text-center text-sm text-slate-500">
+              transcript 为空
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -987,6 +1073,14 @@ function parseJsonDraft(value: string): unknown {
   } catch {
     throw new Error("Run input 必须是合法 JSON。");
   }
+}
+
+function messageToText(message: UIMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text: string }).text)
+    .join("\n")
+    .trim();
 }
 
 function parseConfigJson(value: string, label: string): unknown {

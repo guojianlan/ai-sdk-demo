@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+
+import type { UIMessage } from "ai";
 import { generateText, jsonSchema, Output } from "ai";
 
 import { instrumentModel } from "@/lib/devtools";
@@ -8,11 +11,15 @@ import {
   createFlowRun,
   getFlowRunWithNodes,
   getFlowWithGraph,
+  archiveThread,
+  saveMessages,
   updateFlowNodeRun,
   updateFlowRun,
   type FlowEdge,
+  type FlowDefinition,
   type FlowNode,
   type FlowRunWithNodes,
+  upsertThread,
 } from "@/lib/persistence";
 
 const MAX_EXECUTED_NODES = 100;
@@ -47,6 +54,7 @@ type NormalizedPromptConfig = {
 type NodeExecutionResult = {
   output: unknown;
   trace: unknown;
+  transcriptThreadId?: string | null;
 };
 
 export async function executeFlow(params: {
@@ -125,11 +133,16 @@ export async function executeFlow(params: {
       });
 
       try {
-        const result = await executeNode(node, input);
+        const result = await executeNode(node, input, {
+          flow: graph.flow,
+          flowRunId: run.id,
+          nodeRunId: nodeRun.id,
+        });
         updateFlowNodeRun(nodeRun.id, {
           status: "succeeded",
           output: result.output,
           trace: result.trace,
+          transcriptThreadId: result.transcriptThreadId ?? null,
           finishedAt: Date.now(),
         });
         outputByNode.set(node.id, result.output);
@@ -185,6 +198,11 @@ export async function executeFlow(params: {
 async function executeNode(
   node: FlowNode,
   input: unknown,
+  context: {
+    flow: FlowDefinition;
+    flowRunId: string;
+    nodeRunId: string;
+  },
 ): Promise<NodeExecutionResult> {
   if (node.type === "start") {
     return {
@@ -197,7 +215,7 @@ async function executeNode(
   }
 
   if (node.type === "prompt") {
-    return executePromptNode(node, input);
+    return executePromptNode(node, input, context);
   }
 
   if (node.type === "end") {
@@ -278,6 +296,11 @@ function executeConditionNode(
 async function executePromptNode(
   node: FlowNode,
   input: unknown,
+  context: {
+    flow: FlowDefinition;
+    flowRunId: string;
+    nodeRunId: string;
+  },
 ): Promise<NodeExecutionResult> {
   const config = normalizePromptConfig(node.config);
   const userPrompt = buildPromptText({
@@ -307,8 +330,19 @@ async function executePromptNode(
         abortSignal: createTimeoutSignal(config.timeoutMs),
       });
 
+  const transcriptThreadId = await savePromptNodeTranscript({
+    flow: context.flow,
+    flowRunId: context.flowRunId,
+    nodeRunId: context.nodeRunId,
+    node,
+    userPrompt,
+    assistantText: result.text,
+    output: result.output,
+  });
+
   return {
     output: result.output,
+    transcriptThreadId,
     trace: {
       kind: "prompt",
       model: env.gateway.modelId,
@@ -328,6 +362,57 @@ async function executePromptNode(
       ],
     },
   };
+}
+
+async function savePromptNodeTranscript(params: {
+  flow: FlowDefinition;
+  flowRunId: string;
+  nodeRunId: string;
+  node: FlowNode;
+  userPrompt: string;
+  assistantText: string;
+  output: unknown;
+}): Promise<string> {
+  const threadId = `flow-node:${params.nodeRunId}`;
+  await upsertThread({
+    id: threadId,
+    workspaceRoot: params.flow.workspaceRoot,
+    workspaceName: params.flow.workspaceName ?? undefined,
+    workspaceAccessMode: "workspace-tools",
+    shellApprovalPolicy: "never",
+    permissionMode: "default",
+    planMode: false,
+    title: `${params.flow.title} / ${params.node.title}`,
+    model: env.gateway.modelId,
+  });
+  archiveThread(threadId);
+
+  const messages: UIMessage[] = [
+    {
+      id: randomUUID(),
+      role: "user",
+      parts: [{ type: "text", text: params.userPrompt }],
+    },
+    {
+      id: randomUUID(),
+      role: "assistant",
+      parts: [
+        {
+          type: "text",
+          text: [
+            params.assistantText.trim(),
+            "",
+            "Output JSON:",
+            stableStringify(params.output),
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        },
+      ],
+    },
+  ];
+  await saveMessages(threadId, messages);
+  return threadId;
 }
 
 function buildNodeInput(

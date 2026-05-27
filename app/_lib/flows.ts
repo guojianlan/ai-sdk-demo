@@ -1,4 +1,5 @@
 import type { WorkspaceOption } from "./chat-session";
+import type { UIMessage } from "ai";
 
 export type FlowNodeType = "start" | "prompt" | "transform" | "condition" | "end";
 
@@ -238,4 +239,17 @@ export async function fetchFlowRunDetail(params: {
     throw new Error("Failed to load flow run.");
   }
   return (await response.json()) as FlowRunWithNodes;
+}
+
+export async function fetchTranscriptMessages(
+  threadId: string,
+): Promise<UIMessage[]> {
+  const response = await fetch(
+    `/api/chat/history?id=${encodeURIComponent(threadId)}`,
+  );
+  if (!response.ok) {
+    throw new Error("Failed to load transcript.");
+  }
+  const data = (await response.json()) as { messages?: UIMessage[] };
+  return data.messages ?? [];
 }
