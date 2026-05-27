@@ -117,6 +117,39 @@ export async function fetchFlowGraph(flowId: string): Promise<FlowGraph> {
   return (await response.json()) as FlowGraph;
 }
 
+export async function updateFlowOnApi(params: {
+  flowId: string;
+  title?: string;
+  description?: string | null;
+}): Promise<FlowDefinition> {
+  const response = await fetch(`/api/flows/${encodeURIComponent(params.flowId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      title: params.title,
+      description: params.description,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const data = (await response.json()) as { flow: FlowDefinition };
+  return data.flow;
+}
+
+export async function archiveFlowOnApi(
+  flowId: string,
+): Promise<FlowDefinition> {
+  const response = await fetch(`/api/flows/${encodeURIComponent(flowId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const data = (await response.json()) as { flow: FlowDefinition };
+  return data.flow;
+}
+
 export async function createFlowNodeOnApi(params: {
   flowId: string;
   type: FlowNodeType;

@@ -57,6 +57,8 @@ export {
   listFlows,
   createFlow,
   getFlowWithGraph,
+  updateFlow,
+  archiveFlow,
   createFlowNode,
   updateFlowNode,
   deleteFlowNode,

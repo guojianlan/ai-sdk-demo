@@ -745,6 +745,11 @@ Completed:
   - the minimap renders the full canvas, nodes, edges, selected node/edge, and current viewport rectangle;
   - clicking or dragging on the minimap recenters the main canvas viewport at that canvas coordinate;
   - minimap navigation works with the existing pan/zoom state instead of changing persisted node coordinates.
+- Added flow definition management:
+  - added `PATCH /api/flows/[flowId]` for title and description updates;
+  - added `DELETE /api/flows/[flowId]` as archive semantics backed by `flows.archived_at`;
+  - the Flow Details inspector can edit title/description and archive the active flow;
+  - archived flows are preserved in SQLite but hidden from `GET /api/flows` and the Flows list.
 
 Verified:
 
@@ -774,6 +779,8 @@ Verified:
 - API smoke: patched an edge condition to `{ "path": "$.route", "equals": "yes" }`, verified the PATCH response, and verified the persisted SQLite-backed graph read returned the same condition.
 - Playwright smoke: selected an edge, edited the Edge Inspector condition to `{ "path": "$.route", "equals": "ui" }`, clicked `Save Edge`, verified `GET /api/flows/[flowId]` returned the saved condition, verified conditional edge styling rendered, and captured `/tmp/ai-sdk-demo-flow-edge-edit-ui.png`.
 - Browser smoke on `127.0.0.1:3002`: opened Flows, loaded `Minimap QA flow`, verified the minimap rendered nodes/edges/current viewport, clicked the minimap near a far-away node, verified the main canvas transform updated and the far node became visible, and captured `/tmp/ai-sdk-demo-flow-minimap-ui.png`.
+- API smoke: created a flow, patched title/description, archived it through `DELETE /api/flows/[flowId]`, and verified it no longer appeared in `GET /api/flows`.
+- Playwright smoke: edited title/description in Flow Details, verified `GET /api/flows/[flowId]` returned the saved metadata, clicked Archive, verified the flow disappeared from the UI and `GET /api/flows`, and captured `/tmp/ai-sdk-demo-flow-details-ui.png`.
 
 Remaining:
 

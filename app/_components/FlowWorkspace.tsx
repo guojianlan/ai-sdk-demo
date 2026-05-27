@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import {
+  archiveFlowOnApi,
   createFlowEdgeOnApi,
   createFlowNodeOnApi,
   createFlowOnApi,
@@ -22,6 +23,7 @@ import {
   fetchFlows,
   fetchTranscriptMessages,
   runFlowOnApi,
+  updateFlowOnApi,
   updateFlowEdgeOnApi,
   updateFlowNodeOnApi,
   type FlowDefinition,
@@ -78,6 +80,7 @@ export function FlowWorkspace({
   const [running, setRunning] = useState(false);
   const [savingNode, setSavingNode] = useState(false);
   const [savingEdge, setSavingEdge] = useState(false);
+  const [savingFlow, setSavingFlow] = useState(false);
   const [error, setError] = useState("");
 
   const effectiveWorkspaceRoot = workspaceRoot || workspaces[0]?.root || "";
@@ -409,6 +412,53 @@ export function FlowWorkspace({
     }
   }
 
+  async function handleSaveFlow(params: {
+    title: string;
+    description: string | null;
+  }) {
+    if (!graph) return;
+    setError("");
+    setSavingFlow(true);
+    try {
+      const flow = await updateFlowOnApi({
+        flowId: graph.flow.id,
+        title: params.title,
+        description: params.description,
+      });
+      setGraph({ ...graph, flow });
+      setFlows((current) =>
+        current.map((item) => (item.id === flow.id ? flow : item)),
+      );
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "保存 flow 失败");
+    } finally {
+      setSavingFlow(false);
+    }
+  }
+
+  async function handleArchiveFlow() {
+    if (!graph) return;
+    setError("");
+    setSavingFlow(true);
+    try {
+      const archived = await archiveFlowOnApi(graph.flow.id);
+      setFlows((current) => current.filter((flow) => flow.id !== archived.id));
+      setGraph(null);
+      setRuns([]);
+      setActiveRun(null);
+      setSelectedNodeId("");
+      setSelectedEdgeId("");
+      const nextFlowId = flows.find((flow) => flow.id !== archived.id)?.id ?? "";
+      setActiveFlowId(nextFlowId);
+    } catch (archiveError) {
+      setError(
+        archiveError instanceof Error ? archiveError.message : "归档 flow 失败",
+      );
+    } finally {
+      setSavingFlow(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden px-5 py-6 sm:px-8 lg:px-10">
       <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
@@ -514,6 +564,7 @@ export function FlowWorkspace({
             activeRun={activeRun}
             inputDraft={inputDraft}
             running={running}
+            savingFlow={savingFlow}
             savingNode={savingNode}
             savingEdge={savingEdge}
             onInputDraftChange={setInputDraft}
@@ -521,6 +572,8 @@ export function FlowWorkspace({
             onConnectNodes={() => void handleConnectNodes()}
             onRunFlow={() => void handleRunFlow()}
             onSelectRun={(runId) => void handleSelectRun(runId)}
+            onSaveFlow={(params) => void handleSaveFlow(params)}
+            onArchiveFlow={() => void handleArchiveFlow()}
             onSaveNode={(params) => void handleSaveNode(params)}
             onPreviewNodePosition={handlePreviewNodePosition}
             onCommitNodePosition={(nodeId, position) =>
@@ -558,6 +611,7 @@ function FlowEditor({
   activeRun,
   inputDraft,
   running,
+  savingFlow,
   savingNode,
   savingEdge,
   onInputDraftChange,
@@ -565,6 +619,8 @@ function FlowEditor({
   onConnectNodes,
   onRunFlow,
   onSelectRun,
+  onSaveFlow,
+  onArchiveFlow,
   onSaveNode,
   onPreviewNodePosition,
   onCommitNodePosition,
@@ -589,6 +645,7 @@ function FlowEditor({
   activeRun: FlowRunWithNodes | null;
   inputDraft: string;
   running: boolean;
+  savingFlow: boolean;
   savingNode: boolean;
   savingEdge: boolean;
   onInputDraftChange: (value: string) => void;
@@ -596,6 +653,8 @@ function FlowEditor({
   onConnectNodes: () => void;
   onRunFlow: () => void;
   onSelectRun: (runId: string) => void;
+  onSaveFlow: (params: { title: string; description: string | null }) => void;
+  onArchiveFlow: () => void;
   onSaveNode: (params: {
     nodeId: string;
     title: string;
@@ -991,13 +1050,17 @@ function FlowEditor({
         selectedNodeRun={selectedNodeRun}
         activeRun={activeRun}
         runs={runs}
+        flow={graph.flow}
         inputDraft={inputDraft}
         running={running}
+        savingFlow={savingFlow}
         savingNode={savingNode}
         savingEdge={savingEdge}
         onInputDraftChange={onInputDraftChange}
         onRunFlow={onRunFlow}
         onSelectRun={onSelectRun}
+        onSaveFlow={onSaveFlow}
+        onArchiveFlow={onArchiveFlow}
         onSaveNode={onSaveNode}
         onSaveEdge={onSaveEdge}
         onDeleteNode={onDeleteNode}
@@ -1224,13 +1287,17 @@ function FlowInspector({
   selectedNodeRun,
   activeRun,
   runs,
+  flow,
   inputDraft,
   running,
+  savingFlow,
   savingNode,
   savingEdge,
   onInputDraftChange,
   onRunFlow,
   onSelectRun,
+  onSaveFlow,
+  onArchiveFlow,
   onSaveNode,
   onSaveEdge,
   onDeleteNode,
@@ -1242,13 +1309,17 @@ function FlowInspector({
   selectedNodeRun: FlowNodeRun | null;
   activeRun: FlowRunWithNodes | null;
   runs: FlowRun[];
+  flow: FlowDefinition;
   inputDraft: string;
   running: boolean;
+  savingFlow: boolean;
   savingNode: boolean;
   savingEdge: boolean;
   onInputDraftChange: (value: string) => void;
   onRunFlow: () => void;
   onSelectRun: (runId: string) => void;
+  onSaveFlow: (params: { title: string; description: string | null }) => void;
+  onArchiveFlow: () => void;
   onSaveNode: (params: {
     nodeId: string;
     title: string;
@@ -1268,6 +1339,14 @@ function FlowInspector({
   return (
     <aside className="min-h-0 overflow-y-auto border-l border-slate-200 pl-4">
       <div className="space-y-4">
+        <FlowDetailsForm
+          key={flow.id}
+          flow={flow}
+          savingFlow={savingFlow}
+          onSaveFlow={onSaveFlow}
+          onArchiveFlow={onArchiveFlow}
+        />
+
         <section className="rounded-md border border-slate-200 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
             <Eyebrow>Run Input</Eyebrow>
@@ -1486,6 +1565,76 @@ function TranscriptBlock({
         </div>
       )}
     </div>
+  );
+}
+
+function FlowDetailsForm({
+  flow,
+  savingFlow,
+  onSaveFlow,
+  onArchiveFlow,
+}: {
+  flow: FlowDefinition;
+  savingFlow: boolean;
+  onSaveFlow: (params: { title: string; description: string | null }) => void;
+  onArchiveFlow: () => void;
+}) {
+  const [titleDraft, setTitleDraft] = useState(flow.title);
+  const [descriptionDraft, setDescriptionDraft] = useState(
+    flow.description ?? "",
+  );
+
+  function handleSaveFlow() {
+    onSaveFlow({
+      title: titleDraft,
+      description: descriptionDraft.trim() || null,
+    });
+  }
+
+  return (
+    <section className="rounded-md border border-slate-200 p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <Eyebrow>Flow Details</Eyebrow>
+        <button
+          type="button"
+          onClick={onArchiveFlow}
+          disabled={savingFlow}
+          className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50 disabled:cursor-wait disabled:border-slate-300 disabled:text-slate-400 disabled:hover:bg-white"
+        >
+          Archive
+        </button>
+      </div>
+      <div className="space-y-2">
+        <label className="block">
+          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+            Title
+          </span>
+          <input
+            value={titleDraft}
+            onChange={(event) => setTitleDraft(event.target.value)}
+            className="h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-900"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+            Description
+          </span>
+          <textarea
+            value={descriptionDraft}
+            onChange={(event) => setDescriptionDraft(event.target.value)}
+            className="h-20 w-full resize-none rounded-md border border-slate-300 p-2 text-sm leading-5 outline-none focus:border-slate-900"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={handleSaveFlow}
+          disabled={savingFlow}
+          className="h-9 w-full rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
+        >
+          {savingFlow ? "Saving" : "Save Flow"}
+        </button>
+      </div>
+    </section>
   );
 }
 

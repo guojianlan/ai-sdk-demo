@@ -301,6 +301,47 @@ export function getFlowWithGraph(flowId: string): FlowWithGraph | null {
   };
 }
 
+export function updateFlow(opts: {
+  flowId: string;
+  title?: string;
+  description?: string | null;
+}): FlowDefinition {
+  assertFlowExists(opts.flowId);
+  const current = getFlow(opts.flowId);
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE flows
+       SET title = ?,
+           description = ?,
+           updated_at = ?
+       WHERE id = ? AND archived_at IS NULL`,
+    )
+    .run(
+      opts.title === undefined
+        ? current.title
+        : opts.title.trim() || "Untitled flow",
+      opts.description === undefined ? current.description : opts.description,
+      now,
+      opts.flowId,
+    );
+  return getFlow(opts.flowId);
+}
+
+export function archiveFlow(flowId: string): FlowDefinition {
+  assertFlowExists(flowId);
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE flows
+       SET archived_at = ?,
+           updated_at = ?
+       WHERE id = ? AND archived_at IS NULL`,
+    )
+    .run(now, now, flowId);
+  return getFlow(flowId, { includeArchived: true });
+}
+
 export function createFlowNode(opts: {
   flowId: string;
   type: FlowNodeType;
@@ -708,6 +749,21 @@ function getFlowNode(nodeId: string): FlowNode {
     .get(nodeId) as FlowNodeRow | undefined;
   if (!row) throw new Error("Flow node not found.");
   return rowToNode(row);
+}
+
+function getFlow(
+  flowId: string,
+  opts: { includeArchived?: boolean } = {},
+): FlowDefinition {
+  const row = getDb()
+    .prepare(
+      opts.includeArchived
+        ? `SELECT * FROM flows WHERE id = ?`
+        : `SELECT * FROM flows WHERE id = ? AND archived_at IS NULL`,
+    )
+    .get(flowId) as FlowRow | undefined;
+  if (!row) throw new Error("Flow not found.");
+  return rowToFlow(row);
 }
 
 function getFlowEdge(edgeId: string): FlowEdge {
