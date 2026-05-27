@@ -23,6 +23,7 @@ import {
   fetchFlows,
   fetchTranscriptMessages,
   runFlowOnApi,
+  updateFlowEdgeOnApi,
   updateFlowNodeOnApi,
   type FlowDefinition,
   type FlowEdge,
@@ -75,6 +76,7 @@ export function FlowWorkspace({
   const [inputDraft, setInputDraft] = useState("{\n  \"topic\": \"hello\"\n}");
   const [running, setRunning] = useState(false);
   const [savingNode, setSavingNode] = useState(false);
+  const [savingEdge, setSavingEdge] = useState(false);
   const [error, setError] = useState("");
 
   const effectiveWorkspaceRoot = workspaceRoot || workspaces[0]?.root || "";
@@ -381,6 +383,31 @@ export function FlowWorkspace({
     }
   }
 
+  async function handleSaveEdge(params: {
+    edgeId: string;
+    condition: unknown | null;
+  }) {
+    if (!graph) return;
+    setError("");
+    setSavingEdge(true);
+    try {
+      const edge = await updateFlowEdgeOnApi({
+        flowId: graph.flow.id,
+        edgeId: params.edgeId,
+        condition: params.condition,
+      });
+      setGraph({
+        ...graph,
+        edges: graph.edges.map((item) => (item.id === edge.id ? edge : item)),
+      });
+      setSelectedEdgeId(edge.id);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "保存连线失败");
+    } finally {
+      setSavingEdge(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden px-5 py-6 sm:px-8 lg:px-10">
       <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
@@ -487,6 +514,7 @@ export function FlowWorkspace({
             inputDraft={inputDraft}
             running={running}
             savingNode={savingNode}
+            savingEdge={savingEdge}
             onInputDraftChange={setInputDraft}
             onAddNode={() => void handleAddNode()}
             onConnectNodes={() => void handleConnectNodes()}
@@ -497,6 +525,7 @@ export function FlowWorkspace({
             onCommitNodePosition={(nodeId, position) =>
               void handleCommitNodePosition(nodeId, position)
             }
+            onSaveEdge={(params) => void handleSaveEdge(params)}
             onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
             onDeleteEdge={(edgeId) => void handleDeleteEdge(edgeId)}
           />
@@ -529,6 +558,7 @@ function FlowEditor({
   inputDraft,
   running,
   savingNode,
+  savingEdge,
   onInputDraftChange,
   onAddNode,
   onConnectNodes,
@@ -537,6 +567,7 @@ function FlowEditor({
   onSaveNode,
   onPreviewNodePosition,
   onCommitNodePosition,
+  onSaveEdge,
   onDeleteNode,
   onDeleteEdge,
 }: {
@@ -558,6 +589,7 @@ function FlowEditor({
   inputDraft: string;
   running: boolean;
   savingNode: boolean;
+  savingEdge: boolean;
   onInputDraftChange: (value: string) => void;
   onAddNode: () => void;
   onConnectNodes: () => void;
@@ -576,6 +608,7 @@ function FlowEditor({
     nodeId: string,
     position: { x: number; y: number },
   ) => void;
+  onSaveEdge: (params: { edgeId: string; condition: unknown | null }) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
@@ -931,10 +964,12 @@ function FlowEditor({
         inputDraft={inputDraft}
         running={running}
         savingNode={savingNode}
+        savingEdge={savingEdge}
         onInputDraftChange={onInputDraftChange}
         onRunFlow={onRunFlow}
         onSelectRun={onSelectRun}
         onSaveNode={onSaveNode}
+        onSaveEdge={onSaveEdge}
         onDeleteNode={onDeleteNode}
         onDeleteEdge={onDeleteEdge}
       />
@@ -1017,10 +1052,12 @@ function FlowInspector({
   inputDraft,
   running,
   savingNode,
+  savingEdge,
   onInputDraftChange,
   onRunFlow,
   onSelectRun,
   onSaveNode,
+  onSaveEdge,
   onDeleteNode,
   onDeleteEdge,
 }: {
@@ -1033,6 +1070,7 @@ function FlowInspector({
   inputDraft: string;
   running: boolean;
   savingNode: boolean;
+  savingEdge: boolean;
   onInputDraftChange: (value: string) => void;
   onRunFlow: () => void;
   onSelectRun: (runId: string) => void;
@@ -1041,6 +1079,7 @@ function FlowInspector({
     title: string;
     config: unknown;
   }) => void;
+  onSaveEdge: (params: { edgeId: string; condition: unknown | null }) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
@@ -1130,7 +1169,12 @@ function FlowInspector({
                   {selectedEdgeTarget?.title ?? "Unknown"}
                 </span>
               </div>
-              <JsonBlock label="Condition" value={selectedEdge.condition} />
+              <EdgeConfigForm
+                key={selectedEdge.id}
+                edge={selectedEdge}
+                savingEdge={savingEdge}
+                onSaveEdge={onSaveEdge}
+              />
             </div>
           </section>
         )}
@@ -1266,6 +1310,67 @@ function TranscriptBlock({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function EdgeConfigForm({
+  edge,
+  savingEdge,
+  onSaveEdge,
+}: {
+  edge: FlowEdge;
+  savingEdge: boolean;
+  onSaveEdge: (params: { edgeId: string; condition: unknown | null }) => void;
+}) {
+  const [conditionDraft, setConditionDraft] = useState(
+    JSON.stringify(edge.condition, null, 2),
+  );
+  const [conditionError, setConditionError] = useState("");
+
+  function handleSaveSelectedEdge() {
+    setConditionError("");
+    try {
+      onSaveEdge({
+        edgeId: edge.id,
+        condition: parseConfigJson(
+          conditionDraft.trim() || "null",
+          "Edge condition",
+        ) as unknown | null,
+      });
+    } catch (error) {
+      setConditionError(
+        error instanceof Error ? error.message : "连线条件必须是合法 JSON",
+      );
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="block">
+        <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+          Condition
+        </span>
+        <textarea
+          value={conditionDraft}
+          onChange={(event) => setConditionDraft(event.target.value)}
+          spellCheck={false}
+          className="h-24 w-full resize-none rounded-md border border-slate-300 bg-white p-2 font-mono text-xs leading-5 outline-none focus:border-slate-900"
+        />
+      </label>
+      {conditionError && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+          {conditionError}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={handleSaveSelectedEdge}
+        disabled={savingEdge}
+        className="h-9 w-full rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
+      >
+        {savingEdge ? "Saving" : "Save Edge"}
+      </button>
     </div>
   );
 }

@@ -216,6 +216,30 @@ export async function createFlowEdgeOnApi(params: {
   return data.edge;
 }
 
+export async function updateFlowEdgeOnApi(params: {
+  flowId: string;
+  edgeId: string;
+  condition?: unknown | null;
+}): Promise<FlowEdge> {
+  const response = await fetch(
+    `/api/flows/${encodeURIComponent(params.flowId)}/edges/${encodeURIComponent(
+      params.edgeId,
+    )}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        condition: params.condition ?? null,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const data = (await response.json()) as { edge: FlowEdge };
+  return data.edge;
+}
+
 export async function deleteFlowEdgeOnApi(params: {
   flowId: string;
   edgeId: string;

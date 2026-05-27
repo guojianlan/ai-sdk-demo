@@ -736,6 +736,11 @@ Completed:
   - edge rendering follows updated node positions because edges are still derived from persisted node coordinates;
   - the canvas supports background drag-to-pan;
   - zoom controls and wheel zoom update both the transformed surface and grid background around the active viewport point.
+- Added editable edge conditions:
+  - added `PATCH /api/flows/[flowId]/edges/[edgeId]`;
+  - added persistence support for updating `flow_edges.condition_json`;
+  - the Edge Inspector can edit and save condition JSON;
+  - saved conditions immediately update the selected edge and dashed conditional-edge styling.
 
 Verified:
 
@@ -762,8 +767,10 @@ Verified:
 - API smoke: created a flow, added a node and edge, deleted the edge, deleted the node, and verified the node and connected edges were absent afterward.
 - Browser smoke on `127.0.0.1:3002`: opened Flows, created `UI delete QA flow`, added a Prompt node, connected it, selected and deleted the edge, selected and deleted the Prompt node, and verified the UI returned to `2 nodes · 0 edges` without console errors.
 - Browser smoke on `127.0.0.1:3002`: opened Flows, loaded `UI pan zoom QA flow`, dragged the Start node from `{ x: 120, y: 180 }` to `{ x: 200, y: 230 }`, verified the persisted position via `GET /api/flows/[flowId]`, reloaded the page and confirmed the same node position still rendered, zoomed to `110%`, panned the canvas, and captured `/tmp/ai-sdk-demo-flow-pan-zoom-ui.png`.
+- API smoke: patched an edge condition to `{ "path": "$.route", "equals": "yes" }`, verified the PATCH response, and verified the persisted SQLite-backed graph read returned the same condition.
+- Playwright smoke: selected an edge, edited the Edge Inspector condition to `{ "path": "$.route", "equals": "ui" }`, clicked `Save Edge`, verified `GET /api/flows/[flowId]` returned the saved condition, verified conditional edge styling rendered, and captured `/tmp/ai-sdk-demo-flow-edge-edit-ui.png`.
 
 Remaining:
 
-- Add richer infinite-canvas interactions such as minimap, selection boxes, better edge routing, and edge editing.
+- Add richer infinite-canvas interactions such as minimap, selection boxes, and better edge routing.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.

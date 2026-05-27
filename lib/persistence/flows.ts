@@ -438,6 +438,37 @@ export function createFlowEdge(opts: {
   return getFlowEdge(id);
 }
 
+export function updateFlowEdge(opts: {
+  flowId: string;
+  edgeId: string;
+  condition?: unknown | null;
+}): FlowEdge {
+  assertFlowExists(opts.flowId);
+  const current = getFlowEdge(opts.edgeId);
+  if (current.flowId !== opts.flowId) {
+    throw new Error("Flow edge not found.");
+  }
+
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE flow_edges
+       SET condition_json = ?,
+           updated_at = ?
+       WHERE id = ? AND flow_id = ?`,
+    )
+    .run(
+      stringifyNullable(
+        opts.condition === undefined ? current.condition : opts.condition,
+      ),
+      now,
+      opts.edgeId,
+      opts.flowId,
+    );
+  touchFlow(opts.flowId, now);
+  return getFlowEdge(opts.edgeId);
+}
+
 export function deleteFlowEdge(opts: {
   flowId: string;
   edgeId: string;

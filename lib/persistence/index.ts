@@ -61,6 +61,7 @@ export {
   updateFlowNode,
   deleteFlowNode,
   createFlowEdge,
+  updateFlowEdge,
   deleteFlowEdge,
   createFlowRun,
   updateFlowRun,
