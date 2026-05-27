@@ -741,6 +741,10 @@ Completed:
   - added persistence support for updating `flow_edges.condition_json`;
   - the Edge Inspector can edit and save condition JSON;
   - saved conditions immediately update the selected edge and dashed conditional-edge styling.
+- Added a canvas minimap:
+  - the minimap renders the full canvas, nodes, edges, selected node/edge, and current viewport rectangle;
+  - clicking or dragging on the minimap recenters the main canvas viewport at that canvas coordinate;
+  - minimap navigation works with the existing pan/zoom state instead of changing persisted node coordinates.
 
 Verified:
 
@@ -769,8 +773,9 @@ Verified:
 - Browser smoke on `127.0.0.1:3002`: opened Flows, loaded `UI pan zoom QA flow`, dragged the Start node from `{ x: 120, y: 180 }` to `{ x: 200, y: 230 }`, verified the persisted position via `GET /api/flows/[flowId]`, reloaded the page and confirmed the same node position still rendered, zoomed to `110%`, panned the canvas, and captured `/tmp/ai-sdk-demo-flow-pan-zoom-ui.png`.
 - API smoke: patched an edge condition to `{ "path": "$.route", "equals": "yes" }`, verified the PATCH response, and verified the persisted SQLite-backed graph read returned the same condition.
 - Playwright smoke: selected an edge, edited the Edge Inspector condition to `{ "path": "$.route", "equals": "ui" }`, clicked `Save Edge`, verified `GET /api/flows/[flowId]` returned the saved condition, verified conditional edge styling rendered, and captured `/tmp/ai-sdk-demo-flow-edge-edit-ui.png`.
+- Browser smoke on `127.0.0.1:3002`: opened Flows, loaded `Minimap QA flow`, verified the minimap rendered nodes/edges/current viewport, clicked the minimap near a far-away node, verified the main canvas transform updated and the far node became visible, and captured `/tmp/ai-sdk-demo-flow-minimap-ui.png`.
 
 Remaining:
 
-- Add richer infinite-canvas interactions such as minimap, selection boxes, and better edge routing.
+- Add richer infinite-canvas interactions such as selection boxes, multi-select, and better edge routing.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.

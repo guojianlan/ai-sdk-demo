@@ -2,7 +2,6 @@
 
 import type { UIMessage } from "ai";
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -52,6 +51,8 @@ const NODE_HEIGHT = 72;
 const GRID_SIZE = 32;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
+const MINIMAP_WIDTH = 180;
+const MINIMAP_HEIGHT = 120;
 
 export function FlowWorkspace({
   workspaces,
@@ -631,6 +632,7 @@ function FlowEditor({
     pan: { x: 0, y: 0 },
     scale: 1,
   });
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [draggingNodeId, setDraggingNodeId] = useState("");
   const [panning, setPanning] = useState(false);
   const selectedNode = selectedNodeId
@@ -642,13 +644,14 @@ function FlowEditor({
   const selectedNodeRun = selectedNode
     ? activeRun?.nodeRuns.find((run) => run.nodeId === selectedNode.id) ?? null
     : null;
-  const clampNodePosition = useCallback((position: { x: number; y: number }) => {
+  function clampNodePosition(position: { x: number; y: number }) {
     return {
       x: clamp(Math.round(position.x), 0, CANVAS_WIDTH - NODE_WIDTH),
       y: clamp(Math.round(position.y), 0, CANVAS_HEIGHT - NODE_HEIGHT),
     };
-  }, []);
-  const updateZoom = useCallback((nextScale: number, center?: { x: number; y: number }) => {
+  }
+
+  function updateZoom(nextScale: number, center?: { x: number; y: number }) {
     setViewport((current) => {
       const viewportElement = viewportRef.current;
       const scale = clamp(nextScale, MIN_ZOOM, MAX_ZOOM);
@@ -671,7 +674,7 @@ function FlowEditor({
         scale,
       };
     });
-  }, []);
+  }
 
   function handleNodePointerDown(
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -718,7 +721,9 @@ function FlowEditor({
     const target = event.target;
     if (
       target instanceof Element &&
-      target.closest("[data-flow-node],[data-flow-edge],button,input,select,textarea")
+      target.closest(
+        "[data-flow-node],[data-flow-edge],[data-flow-minimap],button,input,select,textarea",
+      )
     ) {
       return;
     }
@@ -762,6 +767,22 @@ function FlowEditor({
       y: event.clientY - rect.top,
     });
   }
+
+  useEffect(() => {
+    const viewportElement = viewportRef.current;
+    if (!viewportElement) return;
+    const element = viewportElement;
+
+    function updateViewportSize() {
+      const rect = element.getBoundingClientRect();
+      setViewportSize({ width: rect.width, height: rect.height });
+    }
+
+    updateViewportSize();
+    const observer = new ResizeObserver(updateViewportSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div className="grid min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -951,6 +972,15 @@ function FlowEditor({
             />
           ))}
         </div>
+        <FlowMiniMap
+          nodes={graph.nodes}
+          edges={graph.edges}
+          selectedNodeId={selectedNode?.id ?? ""}
+          selectedEdgeId={selectedEdge?.id ?? ""}
+          viewport={viewport}
+          viewportSize={viewportSize}
+          onViewportChange={setViewport}
+        />
       </div>
       </div>
 
@@ -1038,6 +1068,151 @@ function FlowNodeCard({
       <div className="mt-1 truncate text-sm font-semibold text-slate-900">
         {node.title}
       </div>
+    </button>
+  );
+}
+
+function FlowMiniMap({
+  nodes,
+  edges,
+  selectedNodeId,
+  selectedEdgeId,
+  viewport,
+  viewportSize,
+  onViewportChange,
+}: {
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  selectedNodeId: string;
+  selectedEdgeId: string;
+  viewport: { pan: { x: number; y: number }; scale: number };
+  viewportSize: { width: number; height: number };
+  onViewportChange: (viewport: {
+    pan: { x: number; y: number };
+    scale: number;
+  }) => void;
+}) {
+  const miniMapRef = useRef<HTMLButtonElement | null>(null);
+  const scaleX = MINIMAP_WIDTH / CANVAS_WIDTH;
+  const scaleY = MINIMAP_HEIGHT / CANVAS_HEIGHT;
+  const viewportRect = {
+    x: clamp(-viewport.pan.x / viewport.scale, 0, CANVAS_WIDTH),
+    y: clamp(-viewport.pan.y / viewport.scale, 0, CANVAS_HEIGHT),
+    width: clamp(viewportSize.width / viewport.scale, 0, CANVAS_WIDTH),
+    height: clamp(viewportSize.height / viewport.scale, 0, CANVAS_HEIGHT),
+  };
+
+  function centerViewportAt(event: ReactPointerEvent<HTMLButtonElement>) {
+    const miniMap = miniMapRef.current;
+    if (!miniMap || viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return;
+    }
+
+    const rect = miniMap.getBoundingClientRect();
+    const canvasX = clamp(
+      ((event.clientX - rect.left) / rect.width) * CANVAS_WIDTH,
+      0,
+      CANVAS_WIDTH,
+    );
+    const canvasY = clamp(
+      ((event.clientY - rect.top) / rect.height) * CANVAS_HEIGHT,
+      0,
+      CANVAS_HEIGHT,
+    );
+
+    onViewportChange({
+      scale: viewport.scale,
+      pan: {
+        x: viewportSize.width / 2 - canvasX * viewport.scale,
+        y: viewportSize.height / 2 - canvasY * viewport.scale,
+      },
+    });
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    centerViewportAt(event);
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    event.preventDefault();
+    centerViewportAt(event);
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  return (
+    <button
+      ref={miniMapRef}
+      type="button"
+      data-flow-minimap
+      aria-label="Mini map"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      className="absolute bottom-3 right-3 z-20 overflow-hidden rounded-md border border-slate-300 bg-white/95 p-2 text-left shadow-sm backdrop-blur"
+      style={{ width: MINIMAP_WIDTH + 18, height: MINIMAP_HEIGHT + 18 }}
+    >
+      <svg
+        width={MINIMAP_WIDTH}
+        height={MINIMAP_HEIGHT}
+        viewBox={`0 0 ${MINIMAP_WIDTH} ${MINIMAP_HEIGHT}`}
+        className="block"
+      >
+        <rect
+          x="0"
+          y="0"
+          width={MINIMAP_WIDTH}
+          height={MINIMAP_HEIGHT}
+          fill="#f8fafc"
+        />
+        {edges.map((edge) => {
+          const source = nodes.find((node) => node.id === edge.sourceNodeId);
+          const target = nodes.find((node) => node.id === edge.targetNodeId);
+          if (!source || !target) return null;
+          return (
+            <line
+              key={edge.id}
+              x1={(source.position.x + NODE_WIDTH / 2) * scaleX}
+              y1={(source.position.y + NODE_HEIGHT / 2) * scaleY}
+              x2={(target.position.x + NODE_WIDTH / 2) * scaleX}
+              y2={(target.position.y + NODE_HEIGHT / 2) * scaleY}
+              stroke={edge.id === selectedEdgeId ? "#047857" : "#64748b"}
+              strokeWidth={edge.id === selectedEdgeId ? 1.5 : 1}
+              strokeDasharray={edge.condition ? "2 2" : undefined}
+            />
+          );
+        })}
+        {nodes.map((node) => (
+          <rect
+            key={node.id}
+            x={node.position.x * scaleX}
+            y={node.position.y * scaleY}
+            width={NODE_WIDTH * scaleX}
+            height={NODE_HEIGHT * scaleY}
+            rx="1.5"
+            fill={node.id === selectedNodeId ? "#d1fae5" : "#ffffff"}
+            stroke={node.id === selectedNodeId ? "#047857" : "#0f172a"}
+            strokeWidth={node.id === selectedNodeId ? 1.4 : 0.8}
+          />
+        ))}
+        <rect
+          x={viewportRect.x * scaleX}
+          y={viewportRect.y * scaleY}
+          width={viewportRect.width * scaleX}
+          height={viewportRect.height * scaleY}
+          fill="rgba(4, 120, 87, 0.1)"
+          stroke="#047857"
+          strokeWidth="1.5"
+        />
+      </svg>
     </button>
   );
 }
