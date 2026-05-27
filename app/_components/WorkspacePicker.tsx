@@ -76,12 +76,14 @@ export function WorkspacePicker({
     useState<WorkspaceAccessMode>(DEFAULT_WORKSPACE_ACCESS_MODE);
   const [selectedShellPolicy, setSelectedShellPolicy] =
     useState<ShellApprovalPolicy>(DEFAULT_SHELL_APPROVAL_POLICY);
+  const effectiveSelectedWorkspaceRoot =
+    selectedWorkspaceRoot || workspaces[0]?.root || "";
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const customRoot = customWorkspaceRoot.trim();
-    const chosenRoot = customRoot || selectedWorkspaceRoot;
+    const chosenRoot = customRoot || effectiveSelectedWorkspaceRoot;
 
     if (!chosenRoot) {
       return;
@@ -155,7 +157,7 @@ export function WorkspacePicker({
                 <span className="h-px flex-1 bg-slate-200" />
               </div>
               <select
-                value={selectedWorkspaceRoot}
+                value={effectiveSelectedWorkspaceRoot}
                 onChange={(event) =>
                   setSelectedWorkspaceRoot(event.currentTarget.value)
                 }
@@ -251,8 +253,8 @@ export function WorkspacePicker({
               <div className="mt-1 break-all font-mono text-[12px] leading-6 text-slate-700">
                 {customWorkspaceRoot.trim()
                   ? `→ ${customWorkspaceRoot.trim()}`
-                  : selectedWorkspaceRoot
-                    ? `→ ${selectedWorkspaceRoot}`
+                  : effectiveSelectedWorkspaceRoot
+                    ? `→ ${effectiveSelectedWorkspaceRoot}`
                     : "→ 请选择一个工作区"}
               </div>
               <div className="mt-1 font-mono text-[12px] text-slate-700">
@@ -280,7 +282,9 @@ export function WorkspacePicker({
               </button>
               <button
                 type="submit"
-                disabled={!customWorkspaceRoot.trim() && !selectedWorkspaceRoot}
+                disabled={
+                  !customWorkspaceRoot.trim() && !effectiveSelectedWorkspaceRoot
+                }
                 className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-900 bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-200 disabled:text-slate-500"
               >
                 创建并进入
