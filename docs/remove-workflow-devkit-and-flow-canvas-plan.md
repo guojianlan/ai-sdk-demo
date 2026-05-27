@@ -722,6 +722,14 @@ Completed:
   - the transcript reuses the existing `threads` / `messages` persistence and `/api/chat/history?id=...` reader;
   - the node inspector loads and displays the prompt node user prompt and visible assistant output;
   - hidden reasoning is not stored; the transcript contains only safe visible prompt/output content.
+- Added node and edge deletion:
+  - added `DELETE /api/flows/[flowId]/nodes/[nodeId]`;
+  - added `DELETE /api/flows/[flowId]/edges/[edgeId]`;
+  - deleting a node also deletes connected edges;
+  - Start and End nodes are protected from deletion in the API and UI;
+  - historical `flow_node_runs` are preserved so old run records are not destroyed by canvas edits;
+  - the canvas can select an edge, show its source/target/condition, and delete it from the inspector;
+  - the node inspector exposes a guarded delete action for editable nodes.
 
 Verified:
 
@@ -745,8 +753,10 @@ Verified:
 - API smoke: ran a prompt node, verified `transcriptThreadId`, and loaded two transcript messages through `/api/chat/history`
 - Playwright smoke: opened a completed prompt node in the Flows inspector and verified transcript output was visible; screenshot captured at `/tmp/ai-sdk-demo-flow-transcript-ui.png`
 - API smoke: verified archived transcript threads do not appear in the visible sessions list
+- API smoke: created a flow, added a node and edge, deleted the edge, deleted the node, and verified the node and connected edges were absent afterward.
+- Browser smoke on `127.0.0.1:3002`: opened Flows, created `UI delete QA flow`, added a Prompt node, connected it, selected and deleted the edge, selected and deleted the Prompt node, and verified the UI returned to `2 nodes · 0 edges` without console errors.
 
 Remaining:
 
-- Add node/edge deletion, node drag/pan/zoom, and richer infinite-canvas interactions.
+- Add node drag/pan/zoom and richer infinite-canvas interactions.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.

@@ -172,6 +172,25 @@ export async function updateFlowNodeOnApi(params: {
   return data.node;
 }
 
+export async function deleteFlowNodeOnApi(params: {
+  flowId: string;
+  nodeId: string;
+}): Promise<FlowNode> {
+  const response = await fetch(
+    `/api/flows/${encodeURIComponent(params.flowId)}/nodes/${encodeURIComponent(
+      params.nodeId,
+    )}`,
+    {
+      method: "DELETE",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const data = (await response.json()) as { node: FlowNode };
+  return data.node;
+}
+
 export async function createFlowEdgeOnApi(params: {
   flowId: string;
   sourceNodeId: string;
@@ -188,6 +207,25 @@ export async function createFlowEdgeOnApi(params: {
         targetNodeId: params.targetNodeId,
         condition: params.condition ?? null,
       }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const data = (await response.json()) as { edge: FlowEdge };
+  return data.edge;
+}
+
+export async function deleteFlowEdgeOnApi(params: {
+  flowId: string;
+  edgeId: string;
+}): Promise<FlowEdge> {
+  const response = await fetch(
+    `/api/flows/${encodeURIComponent(params.flowId)}/edges/${encodeURIComponent(
+      params.edgeId,
+    )}`,
+    {
+      method: "DELETE",
     },
   );
   if (!response.ok) {

@@ -364,6 +364,36 @@ export function updateFlowNode(opts: {
   return getFlowNode(opts.nodeId);
 }
 
+export function deleteFlowNode(opts: {
+  flowId: string;
+  nodeId: string;
+}): FlowNode {
+  assertFlowExists(opts.flowId);
+  const current = getFlowNode(opts.nodeId);
+  if (current.flowId !== opts.flowId) {
+    throw new Error("Flow node not found.");
+  }
+  if (current.type === "start" || current.type === "end") {
+    throw new Error("Start and End nodes cannot be deleted.");
+  }
+
+  const now = Date.now();
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare(
+      `DELETE FROM flow_edges
+        WHERE flow_id = ?
+          AND (source_node_id = ? OR target_node_id = ?)`,
+    ).run(opts.flowId, opts.nodeId, opts.nodeId);
+    db.prepare(`DELETE FROM flow_nodes WHERE id = ? AND flow_id = ?`).run(
+      opts.nodeId,
+      opts.flowId,
+    );
+    touchFlow(opts.flowId, now);
+  })();
+  return current;
+}
+
 export function createFlowEdge(opts: {
   flowId: string;
   sourceNodeId: string;
@@ -406,6 +436,24 @@ export function createFlowEdge(opts: {
   });
   touchFlow(opts.flowId, now);
   return getFlowEdge(id);
+}
+
+export function deleteFlowEdge(opts: {
+  flowId: string;
+  edgeId: string;
+}): FlowEdge {
+  assertFlowExists(opts.flowId);
+  const current = getFlowEdge(opts.edgeId);
+  if (current.flowId !== opts.flowId) {
+    throw new Error("Flow edge not found.");
+  }
+
+  const now = Date.now();
+  getDb()
+    .prepare(`DELETE FROM flow_edges WHERE id = ? AND flow_id = ?`)
+    .run(opts.edgeId, opts.flowId);
+  touchFlow(opts.flowId, now);
+  return current;
 }
 
 export function createFlowRun(opts: {
@@ -627,7 +675,7 @@ function getFlowNode(nodeId: string): FlowNode {
   const row = getDb()
     .prepare(`SELECT * FROM flow_nodes WHERE id = ?`)
     .get(nodeId) as FlowNodeRow | undefined;
-  if (!row) throw new Error("Flow node not found after insert.");
+  if (!row) throw new Error("Flow node not found.");
   return rowToNode(row);
 }
 
@@ -635,7 +683,7 @@ function getFlowEdge(edgeId: string): FlowEdge {
   const row = getDb()
     .prepare(`SELECT * FROM flow_edges WHERE id = ?`)
     .get(edgeId) as FlowEdgeRow | undefined;
-  if (!row) throw new Error("Flow edge not found after insert.");
+  if (!row) throw new Error("Flow edge not found.");
   return rowToEdge(row);
 }
 

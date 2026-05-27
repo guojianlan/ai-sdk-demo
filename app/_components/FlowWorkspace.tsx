@@ -7,6 +7,8 @@ import {
   createFlowEdgeOnApi,
   createFlowNodeOnApi,
   createFlowOnApi,
+  deleteFlowEdgeOnApi,
+  deleteFlowNodeOnApi,
   fetchFlowRunDetail,
   fetchFlowRuns,
   fetchFlowGraph,
@@ -15,6 +17,7 @@ import {
   runFlowOnApi,
   updateFlowNodeOnApi,
   type FlowDefinition,
+  type FlowEdge,
   type FlowGraph,
   type FlowNode,
   type FlowNodeRun,
@@ -50,6 +53,7 @@ export function FlowWorkspace({
   const [edgeTarget, setEdgeTarget] = useState("");
   const [edgeConditionDraft, setEdgeConditionDraft] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [selectedEdgeId, setSelectedEdgeId] = useState("");
   const [runs, setRuns] = useState<FlowRun[]>([]);
   const [activeRun, setActiveRun] = useState<FlowRunWithNodes | null>(null);
   const [inputDraft, setInputDraft] = useState("{\n  \"topic\": \"hello\"\n}");
@@ -95,6 +99,7 @@ export function FlowWorkspace({
         setEdgeSource(nextGraph.nodes[0]?.id ?? "");
         setEdgeTarget(nextGraph.nodes[1]?.id ?? nextGraph.nodes[0]?.id ?? "");
         setSelectedNodeId(nextGraph.nodes[0]?.id ?? "");
+        setSelectedEdgeId("");
       })
       .catch((loadError) => {
         if (!cancelled) {
@@ -153,6 +158,7 @@ export function FlowWorkspace({
       setRuns([]);
       setActiveRun(null);
       setSelectedNodeId(created.nodes[0]?.id ?? "");
+      setSelectedEdgeId("");
     } catch (createError) {
       setError(
         createError instanceof Error ? createError.message : "创建 workflow 失败",
@@ -176,6 +182,7 @@ export function FlowWorkspace({
       setGraph({ ...graph, nodes: [...graph.nodes, node] });
       setEdgeTarget(node.id);
       setSelectedNodeId(node.id);
+      setSelectedEdgeId("");
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "添加节点失败");
     }
@@ -233,6 +240,8 @@ export function FlowWorkspace({
       setGraph(nextGraph);
       setEdgeSource(edge.sourceNodeId);
       setEdgeTarget(edge.targetNodeId);
+      setSelectedNodeId("");
+      setSelectedEdgeId(edge.id);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "连接节点失败");
     }
@@ -262,6 +271,54 @@ export function FlowWorkspace({
       setError(saveError instanceof Error ? saveError.message : "保存节点失败");
     } finally {
       setSavingNode(false);
+    }
+  }
+
+  async function handleDeleteNode(nodeId: string) {
+    if (!graph) return;
+    setError("");
+    try {
+      await deleteFlowNodeOnApi({
+        flowId: graph.flow.id,
+        nodeId,
+      });
+      const remainingNodes = graph.nodes.filter((node) => node.id !== nodeId);
+      const remainingEdges = graph.edges.filter(
+        (edge) => edge.sourceNodeId !== nodeId && edge.targetNodeId !== nodeId,
+      );
+      setGraph({
+        ...graph,
+        nodes: remainingNodes,
+        edges: remainingEdges,
+      });
+      setSelectedNodeId(remainingNodes[0]?.id ?? "");
+      setSelectedEdgeId("");
+      setEdgeSource(remainingNodes[0]?.id ?? "");
+      setEdgeTarget(remainingNodes[1]?.id ?? remainingNodes[0]?.id ?? "");
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : "删除节点失败",
+      );
+    }
+  }
+
+  async function handleDeleteEdge(edgeId: string) {
+    if (!graph) return;
+    setError("");
+    try {
+      await deleteFlowEdgeOnApi({
+        flowId: graph.flow.id,
+        edgeId,
+      });
+      setGraph({
+        ...graph,
+        edges: graph.edges.filter((edge) => edge.id !== edgeId),
+      });
+      setSelectedEdgeId("");
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : "删除连线失败",
+      );
     }
   }
 
@@ -357,7 +414,15 @@ export function FlowWorkspace({
             onEdgeTargetChange={setEdgeTarget}
             onEdgeConditionDraftChange={setEdgeConditionDraft}
             selectedNodeId={selectedNodeId}
-            onSelectedNodeChange={setSelectedNodeId}
+            selectedEdgeId={selectedEdgeId}
+            onSelectedNodeChange={(nodeId) => {
+              setSelectedNodeId(nodeId);
+              setSelectedEdgeId("");
+            }}
+            onSelectedEdgeChange={(edgeId) => {
+              setSelectedEdgeId(edgeId);
+              setSelectedNodeId("");
+            }}
             runs={runs}
             activeRun={activeRun}
             inputDraft={inputDraft}
@@ -369,6 +434,8 @@ export function FlowWorkspace({
             onRunFlow={() => void handleRunFlow()}
             onSelectRun={(runId) => void handleSelectRun(runId)}
             onSaveNode={(params) => void handleSaveNode(params)}
+            onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
+            onDeleteEdge={(edgeId) => void handleDeleteEdge(edgeId)}
           />
         ) : (
           <div className="flex min-h-0 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
@@ -391,7 +458,9 @@ function FlowEditor({
   onEdgeTargetChange,
   onEdgeConditionDraftChange,
   selectedNodeId,
+  selectedEdgeId,
   onSelectedNodeChange,
+  onSelectedEdgeChange,
   runs,
   activeRun,
   inputDraft,
@@ -403,6 +472,8 @@ function FlowEditor({
   onRunFlow,
   onSelectRun,
   onSaveNode,
+  onDeleteNode,
+  onDeleteEdge,
 }: {
   graph: FlowGraph;
   nodeType: FlowNodeType;
@@ -414,7 +485,9 @@ function FlowEditor({
   onEdgeTargetChange: (id: string) => void;
   onEdgeConditionDraftChange: (value: string) => void;
   selectedNodeId: string;
+  selectedEdgeId: string;
   onSelectedNodeChange: (id: string) => void;
+  onSelectedEdgeChange: (id: string) => void;
   runs: FlowRun[];
   activeRun: FlowRunWithNodes | null;
   inputDraft: string;
@@ -430,9 +503,15 @@ function FlowEditor({
     title: string;
     config: unknown;
   }) => void;
+  onDeleteNode: (nodeId: string) => void;
+  onDeleteEdge: (edgeId: string) => void;
 }) {
-  const selectedNode =
-    graph.nodes.find((node) => node.id === selectedNodeId) ?? graph.nodes[0];
+  const selectedNode = selectedNodeId
+    ? graph.nodes.find((node) => node.id === selectedNodeId)
+    : undefined;
+  const selectedEdge = selectedEdgeId
+    ? graph.edges.find((edge) => edge.id === selectedEdgeId)
+    : undefined;
   const selectedNodeRun = selectedNode
     ? activeRun?.nodeRuns.find((run) => run.nodeId === selectedNode.id) ?? null
     : null;
@@ -529,17 +608,34 @@ function FlowEditor({
               const source = graph.nodes.find((node) => node.id === edge.sourceNodeId);
               const target = graph.nodes.find((node) => node.id === edge.targetNodeId);
               if (!source || !target) return null;
+              const selected = edge.id === selectedEdge?.id;
               return (
-                <line
+                <g
                   key={edge.id}
-                  x1={source.position.x + 96}
-                  y1={source.position.y + 32}
-                  x2={target.position.x}
-                  y2={target.position.y + 32}
-                  stroke="#0f172a"
-                  strokeWidth="2"
-                  strokeDasharray={edge.condition ? "4 4" : undefined}
-                />
+                  className="pointer-events-auto cursor-pointer"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectedEdgeChange(edge.id);
+                  }}
+                >
+                  <line
+                    x1={source.position.x + 96}
+                    y1={source.position.y + 32}
+                    x2={target.position.x}
+                    y2={target.position.y + 32}
+                    stroke="transparent"
+                    strokeWidth="16"
+                  />
+                  <line
+                    x1={source.position.x + 96}
+                    y1={source.position.y + 32}
+                    x2={target.position.x}
+                    y2={target.position.y + 32}
+                    stroke={selected ? "#047857" : "#0f172a"}
+                    strokeWidth={selected ? "3" : "2"}
+                    strokeDasharray={edge.condition ? "4 4" : undefined}
+                  />
+                </g>
               );
             })}
           </svg>
@@ -558,6 +654,8 @@ function FlowEditor({
 
       <FlowInspector
         selectedNode={selectedNode}
+        selectedEdge={selectedEdge}
+        nodes={graph.nodes}
         selectedNodeRun={selectedNodeRun}
         activeRun={activeRun}
         runs={runs}
@@ -568,6 +666,8 @@ function FlowEditor({
         onRunFlow={onRunFlow}
         onSelectRun={onSelectRun}
         onSaveNode={onSaveNode}
+        onDeleteNode={onDeleteNode}
+        onDeleteEdge={onDeleteEdge}
       />
     </div>
   );
@@ -622,6 +722,8 @@ function FlowNodeCard({
 
 function FlowInspector({
   selectedNode,
+  selectedEdge,
+  nodes,
   selectedNodeRun,
   activeRun,
   runs,
@@ -632,8 +734,12 @@ function FlowInspector({
   onRunFlow,
   onSelectRun,
   onSaveNode,
+  onDeleteNode,
+  onDeleteEdge,
 }: {
   selectedNode: FlowNode | undefined;
+  selectedEdge: FlowEdge | undefined;
+  nodes: FlowNode[];
   selectedNodeRun: FlowNodeRun | null;
   activeRun: FlowRunWithNodes | null;
   runs: FlowRun[];
@@ -648,7 +754,16 @@ function FlowInspector({
     title: string;
     config: unknown;
   }) => void;
+  onDeleteNode: (nodeId: string) => void;
+  onDeleteEdge: (edgeId: string) => void;
 }) {
+  const selectedEdgeSource = selectedEdge
+    ? nodes.find((node) => node.id === selectedEdge.sourceNodeId)
+    : undefined;
+  const selectedEdgeTarget = selectedEdge
+    ? nodes.find((node) => node.id === selectedEdge.targetNodeId)
+    : undefined;
+
   return (
     <aside className="min-h-0 overflow-y-auto border-l border-slate-200 pl-4">
       <div className="space-y-4">
@@ -706,8 +821,49 @@ function FlowInspector({
           </div>
         </section>
 
+        {selectedEdge && (
+          <section className="rounded-md border border-slate-200 p-3">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <Eyebrow>Edge Inspector</Eyebrow>
+              <button
+                type="button"
+                onClick={() => onDeleteEdge(selectedEdge.id)}
+                className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50"
+              >
+                Delete
+              </button>
+            </div>
+            <div className="space-y-2 text-sm text-slate-700">
+              <div>
+                <span className="font-medium text-slate-900">
+                  {selectedEdgeSource?.title ?? "Unknown"}
+                </span>{" "}
+                to{" "}
+                <span className="font-medium text-slate-900">
+                  {selectedEdgeTarget?.title ?? "Unknown"}
+                </span>
+              </div>
+              <JsonBlock label="Condition" value={selectedEdge.condition} />
+            </div>
+          </section>
+        )}
+
         <section className="rounded-md border border-slate-200 p-3">
-          <Eyebrow>Node Inspector</Eyebrow>
+          <div className="flex items-center justify-between gap-2">
+            <Eyebrow>Node Inspector</Eyebrow>
+            {selectedNode && (
+              <button
+                type="button"
+                onClick={() => onDeleteNode(selectedNode.id)}
+                disabled={
+                  selectedNode.type === "start" || selectedNode.type === "end"
+                }
+                className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400 disabled:hover:bg-white"
+              >
+                Delete
+              </button>
+            )}
+          </div>
           {selectedNode ? (
             <div className="mt-3 space-y-3">
               <div>

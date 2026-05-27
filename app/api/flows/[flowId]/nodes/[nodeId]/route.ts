@@ -1,4 +1,4 @@
-import { updateFlowNode } from "@/lib/persistence";
+import { deleteFlowNode, updateFlowNode } from "@/lib/persistence";
 
 export async function PATCH(
   request: Request,
@@ -23,6 +23,23 @@ export async function PATCH(
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Unable to update node" },
+      { status: 400 },
+    );
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ flowId: string; nodeId: string }> },
+) {
+  const { flowId, nodeId } = await params;
+
+  try {
+    const node = deleteFlowNode({ flowId, nodeId });
+    return Response.json({ node });
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Unable to delete node" },
       { status: 400 },
     );
   }
