@@ -43,7 +43,7 @@ export function loadMessages(threadId: string): UIMessage[] {
 /**
  * 整段 replace：DELETE all + INSERT all。事务内执行。
  *
- * 调用时机（per chat workflow step）：每个 LLM 输出步完成后，把当前快照存盘。
+ * 调用时机（per chat loop step）：每个 LLM 输出步完成后，把当前快照存盘。
  * 这样 UI 在任何时刻刷新，都能拿到截至最近一次 step 的完整对话。
  *
  * **副作用**：同时把每条 message 追加到 JSONL（thread 必须先 createThread 过，
@@ -73,7 +73,7 @@ export async function saveMessages(
     `UPDATE threads SET message_count = ?, updated_at = ? WHERE id = ?`,
   );
   // Dedupe by message.id —— PRIMARY KEY (thread_id, message_id) 不允许同 id 重复，
-  // 真撞上时 SQLITE_CONSTRAINT_PRIMARYKEY 会让整个 step 在 workflow 里反复重试。
+  // 真撞上时 SQLITE_CONSTRAINT_PRIMARYKEY 会让整个 step 失败。
   // 防御性地用 Map 收口（later wins —— 同 id 后到的版本通常包含更完整的 parts，
   // 比如同一条 assistant 消息流式过程中的多个快照）。dedupe 真触发时打 warn，
   // 方便定位上游谁送了重复。

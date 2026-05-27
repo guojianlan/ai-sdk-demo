@@ -196,7 +196,7 @@ export const projectEngineerCallOptionsSchema = z.object({
     .default(DEFAULT_PERMISSION_MODE),
   /**
    * Plan 模式（codex collaboration mode）。开启后 buildDeveloperRules 在末尾
-   * 注入 PLAN_MODE_PROMPT，且 chat workflow 会过滤 update_plan / write / edit
+   * 注入 PLAN_MODE_PROMPT，且 chat loop 会过滤 update_plan / write / edit
    * 这些 mutating tool。
    */
   planMode: z.boolean().default(false),
@@ -215,10 +215,10 @@ export const projectEngineerCallOptionsSchema = z.object({
  * 注意：
  * - interactiveToolset 在所有 access mode 下都可用（即使 `no-tools` 模式也允许 agent 追问）
  * - planToolset（update_plan）同样通用——多步任务的进度展示即使没工具也有价值
- * - skillToolset（skill）是 hybrid skill 系统的入口；workflow 在创建 agent 时通过
+ * - skillToolset（skill）是 hybrid skill 系统的入口；chat loop 在创建 agent 时通过
  *   experimental_context.skills 注入当前可用 skill 列表，工具按 name 读 SKILL.md body
  * - shellToolset（shell）只在 workspace-tools mode 挂；no-tools mode 下不暴露
- *   （workflow 那一侧组合 toolset 时会按 access mode 过滤）
+ *   （chat loop 那一侧组合 toolset 时会按 access mode 过滤）
  */
 export const projectEngineerStaticToolset = {
   ...workspaceToolset,
@@ -235,7 +235,7 @@ export const projectEngineerStaticToolset = {
  * 用上面这套 persona / rules / schema / toolset 构造一个主聊天 agent。
  * 路由只负责决定 "这次请求加哪些额外工具"（MCP / 无）+ MCP 清理闭包。
  *
- * skills 由 workflow 在创建 agent 时通过 `getSkills()` 取出后传入，作为 system prompt
+ * skills 由 chat route 在创建 agent run 时通过 `getSkills()` 取出后传入，作为 system prompt
  * 的一层 + skill 工具运行时 context；不传或空数组 = skill 系统未启用。
  */
 export function createProjectEngineerAgent(params: {

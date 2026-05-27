@@ -18,17 +18,21 @@ import { Eyebrow } from "./Eyebrow";
 export function SessionSidebar({
   sessions,
   activeChatId,
+  activeSurface,
   workspaces,
   workspacesLoading,
   workspacesError,
+  onSurfaceChange,
   onNewSession,
   onSelectSession,
 }: {
   sessions: ChatSession[];
   activeChatId: string;
+  activeSurface: "chat" | "flows";
   workspaces: WorkspaceOption[];
   workspacesLoading: boolean;
   workspacesError: string;
+  onSurfaceChange: (surface: "chat" | "flows") => void;
   onNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
 }) {
@@ -63,6 +67,24 @@ export function SessionSidebar({
           </svg>
           新建
         </button>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-slate-200 bg-slate-50 p-1">
+        {(["chat", "flows"] as const).map((surface) => (
+          <button
+            key={surface}
+            type="button"
+            onClick={() => onSurfaceChange(surface)}
+            className={[
+              "h-8 rounded-sm font-mono text-[11px] font-medium uppercase tracking-[0.16em] transition-colors",
+              activeSurface === surface
+                ? "bg-slate-900 text-white"
+                : "text-slate-600 hover:bg-white",
+            ].join(" ")}
+          >
+            {surface === "chat" ? "Chat" : "Flows"}
+          </button>
+        ))}
       </div>
 
       <div className="mb-4 rounded-md border border-slate-300 bg-white p-4">

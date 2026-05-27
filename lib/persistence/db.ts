@@ -49,9 +49,9 @@ export function getDb(): DatabaseType {
   db.pragma("foreign_keys = ON");
   applyMigrations(db);
 
-  // 启动时清掉 stale active_stream_id —— workflow run id 是进程内的，重启全失效。
+  // 启动时清掉 stale active_stream_id —— local chat run id 是进程内的，重启全失效。
   // 残留会让新 chat 请求在 reconcileExistingActiveStream 里 await 一个永远不存在的
-  // run.status，表现成"chat 接口挂死"。详见 runtime.ts:clearStaleRuntimeOnBoot 注释。
+  // run 状态，表现成"chat 接口挂死"。详见 runtime.ts:clearStaleRuntimeOnBoot 注释。
   try {
     const result = db
       .prepare(

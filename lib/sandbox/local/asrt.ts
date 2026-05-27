@@ -26,7 +26,7 @@ import { env } from "@/lib/env";
  * - filesystem.allowWrite = `["${cwd}", "/tmp", "${HOME}/.npm", "${HOME}/.cache"]`
  *   —— 工作区可写、临时目录可写、包管理器缓存可写
  * - filesystem.denyRead = `["${HOME}/.ssh", "${HOME}/.aws", "${HOME}/.config/gh"]`
- *   —— 这些通常不进 dev workflow，硬挡
+ *   —— 这些通常不进 dev chat run，硬挡
  * - network.allowedDomains = `env.sandbox.allowedDomains`
  *   —— 默认空 = 全 deny。npm install / git push 这类要联网的，用户在 .env.local
  *   里自己加白名单

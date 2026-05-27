@@ -19,7 +19,7 @@ import { deleteSummary } from "./summaries";
  * - `<thread-id>.jsonl` (文件)    ：append-only 事件日志，给 memory 管线消费
  * - `thread_summaries` (SQLite)   ：legacy compaction 摘要
  * - `thread_active_context`       ：当前 agent replacement history
- * - `thread_runtime_state` (SQLite)：workflow active stream
+ * - `thread_runtime_state` (SQLite)：active chat run
  *
  * 设计原则：caller 持有 thread.id（= 前端 chatId），所有 API 用 id 做 key。
  */

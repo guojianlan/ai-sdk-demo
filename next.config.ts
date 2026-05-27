@@ -1,5 +1,4 @@
 import type { NextConfig } from "next";
-import { withWorkflow } from "workflow/next";
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost"],
@@ -13,4 +12,4 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["better-sqlite3", "@vscode/ripgrep"],
 };
 
-export default withWorkflow(nextConfig);
+export default nextConfig;

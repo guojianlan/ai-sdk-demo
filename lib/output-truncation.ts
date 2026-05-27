@@ -88,22 +88,21 @@ function reverseString(s: string): string {
 }
 
 /**
- * Workflow queue 物理硬墙（1.5 MiB）的传输层兜底：把每个 tool-like part 的
- * `input` / `output` 里的字符串字段截到 `maxBytesPerString`，结构保留。
+ * Model context 传输层兜底：把每个 tool-like part 的 `input` / `output`
+ * 里的字符串字段截到 `maxBytesPerString`，结构保留。
  *
  * 跟 `truncateMiddle` 的区别：那个是单串的截断算法；这里是消息树的递归套用。
  *
  * 为什么要这层：
  *   - 写入层截断（shell.ts / workspaces.ts 用 truncateMiddle）只覆盖**新产生**
  *     的 tool 输出；DB 里**已存盘**的旧消息（pre-truncation 时代留下的大块
- *     stdout / file content）会被原样回灌进 workflow input
+ *     stdout / file content）会被原样回灌进下一次 model input
  *   - P4-b compaction 走 LLM 调用，输入本身就大时它自己会超时/失败 → fallback
- *     "continuing without compaction" → 原样灌进 `start(runAgentWorkflow, ...)`
- *     → 序列化 > 1.5 MiB → world-local 队列报
- *     `SyntaxError: Unterminated string in JSON at position 1572864`
+ *     "continuing without compaction" → 原样灌进后端 chat run → model context
+ *     继续膨胀
  *
- * 所以在 `start()` 前再过一道**不依赖 LLM 的硬截断**，保证 workflow 入参永远进
- * 得了队列。Agent 看到 `[... N bytes omitted ...]` 标记会知道有内容丢失。
+ * 所以在启动 chat run 前再过一道**不依赖 LLM 的硬截断**。Agent 看到
+ * `[... N bytes omitted ...]` 标记会知道有内容丢失。
  */
 const TOOL_PART_FIELDS = ["input", "output"] as const;
 

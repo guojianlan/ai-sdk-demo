@@ -18,7 +18,7 @@ import { getWorkspaceToolContext } from "./context";
  *   - A4：手动 + 即时（agent 在对话中显式 commit "我记一下"）
  *
  * 启用条件：项目级 settings.json `memoryEnabled: true`（默认）。关掉后这个工具
- * 从 toolset 里被过滤掉，agent 看不到。详见 chat workflow 的 toolset 过滤逻辑。
+ * 从 toolset 里被过滤掉，agent 看不到。详见 chat loop 的 toolset 过滤逻辑。
  *
  * 安全（自动接 ACL + Mode）：
  *   - 走 `approvedTool`，name="memory_write"

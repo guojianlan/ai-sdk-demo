@@ -2,7 +2,7 @@ import type { Sandbox } from "./interface";
 
 /**
  * 工具运行时从 `experimental_context` 取 sandbox 实例的统一入口。
- * 缺失时直接抛错 —— route + workflow 都应该保证注入，缺就是 bug。
+ * 缺失时直接抛错 —— route + chat loop 都应该保证注入，缺就是 bug。
  */
 export function getSandbox(context: unknown): Sandbox {
   if (

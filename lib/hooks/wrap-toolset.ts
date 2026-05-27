@@ -24,7 +24,7 @@ import type { AggregatedHookResult } from "./types";
  *   切点"可挂。
  *
  * 设计取舍：
- * - 不在 `createChatAgent` builder 里直接接，而是暴露成独立函数让 workflow 显式
+ * - 不在 `createChatAgent` builder 里直接接，而是暴露成独立函数让 chat loop 显式
  *   调用——避免给单测/子 agent 路径强加 hook（subagent 自构 toolset 走自己的链路）。
  * - 用 spread 复制 tool 对象 + 替换 `execute`，依赖 AI SDK 的 tool 是 plain object
  *   这件事。如果将来 AI SDK 改成 class instance，要换成 `tool({...config})` 重建。

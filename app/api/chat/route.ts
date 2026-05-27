@@ -1,11 +1,11 @@
 import {
+  createUIMessageStream,
   createUIMessageStreamResponse,
+  generateId,
   type InferUIMessageChunk,
   type UIMessage,
 } from "ai";
-import { getRun, start } from "workflow/api";
 
-import { runAgentWorkflow } from "@/app/workflows/chat";
 import {
   normalizeWorkspaceAccessMode,
   type WorkspaceAccessMode,
@@ -43,6 +43,12 @@ import {
   estimateTokens,
 } from "@/lib/compaction";
 import { lastAssistantMessageHasCompletedClientContinuationTool } from "@/lib/chat/auto-submit";
+import {
+  createActiveChatRunReadable,
+  getActiveChatRun,
+  registerActiveChatRun,
+} from "@/lib/chat-agent/active-runs";
+import { runChatAgentLoop } from "@/lib/chat-agent/run-loop";
 import { env, requireGatewayApiKey } from "@/lib/env";
 import { gateway } from "@/lib/gateway";
 import { runPhase1ForThread } from "@/lib/memory";
@@ -52,15 +58,15 @@ import {
   createCancelableReadableStream,
   dropReasoningChunks,
   orderStatefulUIMessageChunks,
-} from "@/lib/workflow-readable";
+} from "@/lib/chat-agent/stream-utils";
 
 type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
 
 const ACTIVE_STREAM_RECONCILIATION_MAX_ATTEMPTS = 3;
 
-// 每个 tool input/output 字符串字段进 workflow queue 前的硬上限。
-// 1.5 MiB queue cap / ~100 可能的 tool part ≈ 15 KB 安全预算；取 12 KB 留点余地。
-const WORKFLOW_TRANSPORT_MAX_STRING_BYTES = 12_000;
+// 每个 tool input/output 字符串字段进入下一次 model context 前的硬上限。
+// 保留这个防线，即使移除了 Workflow DevKit，也避免旧历史里的超大 tool 输出拖垮请求。
+const MODEL_CONTEXT_MAX_STRING_BYTES = 12_000;
 
 export async function POST(request: Request) {
   try {
@@ -125,12 +131,12 @@ export async function POST(request: Request) {
     if (existingStream.action === "resume") {
       return createUIMessageStreamResponse({
         stream: existingStream.stream,
-        headers: { "x-workflow-run-id": existingStream.runId },
+        headers: { "x-chat-run-id": existingStream.runId },
       });
     }
     if (existingStream.action === "conflict") {
       return Response.json(
-        { error: "Another workflow is already running for this chat." },
+        { error: "Another chat run is already running for this chat." },
         { status: 409 },
       );
     }
@@ -145,7 +151,7 @@ export async function POST(request: Request) {
   // 至少有一条 user 消息（典型首条请求）。
   //
   // 跑 hook 用一个**组合 registry**：defaultHookRegistry（日志）+ settings-derived
-  // （声明式 hook 如 dotenv-blocklist）。这跟 workflow 内 wrap-toolset 用的是同
+  // （声明式 hook 如 dotenv-blocklist）。这跟 chat loop 内 wrap-toolset 用的是同
   // 一套组合策略，保证"工具层"与"prompt 层"行为口径一致。
   const priorMessages = loadMessages(chatId);
   const isFirstUserTurn =
@@ -221,7 +227,7 @@ export async function POST(request: Request) {
   //
   // DB 的 messages 表继续保存完整 UI transcript；agent 输入改走独立的
   // active replacement history。这样被污染成 `user + assistant + assistant...`
-  // 的可见历史不会再因为 compacted_count 切片失败而直接灌进 workflow。
+  // 的可见历史不会再因为 compacted_count 切片失败而直接灌进 model context。
   const agentViewMessages = fullSanitized.filter(
     (message) => message.role !== "system",
   );
@@ -350,54 +356,71 @@ export async function POST(request: Request) {
   // 这调用很轻——首次扫盘后 cached，后续就是 Map 命中。
   const skills = await getSkills();
 
-  // 传输层硬截断：workflow queue（world-local 实现）单条消息体上限 1.5 MiB，
-  // 超了就抛 `SyntaxError: Unterminated string in JSON at position 1572864`。
-  // compaction 在大输入下自己也会 LLM 超时 fallback，救不了场。这里在 start()
-  // 之前把每个 tool-like part 的 input/output 字符串截到 ~12KB，结构保留，
-  // 保证不管历史多脏都能进队列。
-  const agentMessagesForWorkflow = truncateToolPartsForTransport(
+  // 进入 chat run 前把每个 tool-like part 的 input/output 字符串截到 ~12KB，
+  // 结构保留。旧 DB 里可能存着 pre-truncation 时代留下的大块 stdout/file content。
+  const agentMessagesForRun = truncateToolPartsForTransport(
     agentMessages,
-    WORKFLOW_TRANSPORT_MAX_STRING_BYTES,
+    MODEL_CONTEXT_MAX_STRING_BYTES,
   );
-  const fullMessagesForWorkflow = truncateToolPartsForTransport(
+  const fullMessagesForRun = truncateToolPartsForTransport(
     fullSanitized,
-    WORKFLOW_TRANSPORT_MAX_STRING_BYTES,
+    MODEL_CONTEXT_MAX_STRING_BYTES,
   );
 
-  const run = await start(runAgentWorkflow, [
-    {
-      chatId,
-      agentMessages: agentMessagesForWorkflow,
-      fullMessages: fullMessagesForWorkflow,
-      compactionNotice,
-      workspaceRoot,
-      workspaceName: body.workspaceName,
-      workspaceAccessMode,
-      shellApprovalPolicy: body.shellApprovalPolicy,
-      permissionMode,
-      planMode,
-      conversationSummary: agentSummary,
-      skills,
-      hookContexts,
-    },
-  ]);
-
-  const claimed = compareAndSetActiveStreamId(chatId, null, run.runId);
+  const runId = generateId();
+  const claimed = compareAndSetActiveStreamId(chatId, null, runId);
   if (!claimed) {
-    await run.cancel().catch(() => undefined);
     return Response.json(
-      { error: "Another workflow is already running for this chat." },
+      { error: "Another chat run is already running for this chat." },
       { status: 409 },
     );
   }
 
+  const abortController = new AbortController();
+  const source = createUIMessageStream<UIMessage>({
+    async execute({ writer }) {
+      try {
+        await runChatAgentLoop({
+          runId,
+          writer,
+          abortSignal: abortController.signal,
+          options: {
+            chatId,
+            agentMessages: agentMessagesForRun,
+            fullMessages: fullMessagesForRun,
+            compactionNotice,
+            workspaceRoot,
+            workspaceName: body.workspaceName,
+            workspaceAccessMode,
+            shellApprovalPolicy: body.shellApprovalPolicy,
+            permissionMode,
+            planMode,
+            conversationSummary: agentSummary,
+            skills,
+            hookContexts,
+          },
+        });
+      } finally {
+        compareAndSetActiveStreamId(chatId, runId, null);
+      }
+    },
+    onError: (error) =>
+      error instanceof Error ? error.message : "Unknown chat run error",
+  });
+  const run = registerActiveChatRun({
+    id: runId,
+    chatId,
+    controller: abortController,
+    source,
+  });
+
   return createUIMessageStreamResponse({
     stream: createCancelableReadableStream(
       orderStatefulUIMessageChunks(
-        dropReasoningChunks(run.getReadable<ChatUIMessageChunk>()),
+        dropReasoningChunks(createActiveChatRunReadable(run)),
       ),
     ),
-    headers: { "x-workflow-run-id": run.runId },
+    headers: { "x-chat-run-id": runId },
   });
 }
 
@@ -490,15 +513,14 @@ async function reconcileExistingActiveStream(
     attempt++
   ) {
     try {
-      const run = getRun(currentStreamId);
-      const status = await run.status;
-      if (status === "running" || status === "pending") {
+      const run = getActiveChatRun(currentStreamId);
+      if (run?.status === "running") {
         return {
           action: "resume",
           runId: currentStreamId,
           stream: createCancelableReadableStream(
             orderStatefulUIMessageChunks(
-              dropReasoningChunks(run.getReadable<ChatUIMessageChunk>()),
+              dropReasoningChunks(createActiveChatRunReadable(run)),
             ),
           ),
         };

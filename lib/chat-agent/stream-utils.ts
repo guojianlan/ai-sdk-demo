@@ -62,11 +62,7 @@ export function orderStatefulUIMessageChunks<
     }
   }
 
-  function bufferPending(
-    pending: Map<string, T[]>,
-    key: string,
-    chunk: T,
-  ) {
+  function bufferPending(pending: Map<string, T[]>, key: string, chunk: T) {
     const chunks = pending.get(key);
     if (chunks) {
       chunks.push(chunk);
@@ -106,8 +102,7 @@ export function orderStatefulUIMessageChunks<
         }
 
         if (
-          (chunk.type === "reasoning-delta" ||
-            chunk.type === "reasoning-end") &&
+          (chunk.type === "reasoning-delta" || chunk.type === "reasoning-end") &&
           chunk.id &&
           !startedReasoning.has(chunk.id)
         ) {

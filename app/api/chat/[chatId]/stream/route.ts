@@ -1,10 +1,11 @@
 import {
   createUIMessageStreamResponse,
-  type InferUIMessageChunk,
-  type UIMessage,
 } from "ai";
-import { getRun } from "workflow/api";
 
+import {
+  createActiveChatRunReadable,
+  getActiveChatRun,
+} from "@/lib/chat-agent/active-runs";
 import {
   compareAndSetActiveStreamId,
   getActiveStreamId,
@@ -13,18 +14,16 @@ import {
   createCancelableReadableStream,
   dropReasoningChunks,
   orderStatefulUIMessageChunks,
-} from "@/lib/workflow-readable";
+} from "@/lib/chat-agent/stream-utils";
 
 /**
  * GET /api/chat/[chatId]/stream
  *
  * AI SDK v6 的 DefaultChatTransport.reconnectToStream 默认打这条路径。
- * 在 SQLite 里找对应 chatId 的 active workflow run：
+ * 在 SQLite 里找对应 chatId 的 active local chat run：
  *   - 找到 → 把"已累积 chunks + 后续 live chunks"作为 SSE 返回，客户端无缝续看
  *   - 没找到（流已结束或根本没开过）→ 204 No Content，前端 resumeStream() 就当无事发生
  */
-type ChatUIMessageChunk = InferUIMessageChunk<UIMessage>;
-
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ chatId: string }> },
@@ -41,9 +40,8 @@ export async function GET(
   }
 
   try {
-    const run = getRun(runId);
-    const status = await run.status;
-    if (status !== "running" && status !== "pending") {
+    const run = getActiveChatRun(runId);
+    if (!run || run.status !== "running") {
       compareAndSetActiveStreamId(normalized, runId, null);
       return new Response(null, { status: 204 });
     }
@@ -51,10 +49,10 @@ export async function GET(
     return createUIMessageStreamResponse({
       stream: createCancelableReadableStream(
         orderStatefulUIMessageChunks(
-          dropReasoningChunks(run.getReadable<ChatUIMessageChunk>()),
+          dropReasoningChunks(createActiveChatRunReadable(run)),
         ),
       ),
-      headers: { "x-workflow-run-id": runId },
+      headers: { "x-chat-run-id": runId },
     });
   } catch {
     compareAndSetActiveStreamId(normalized, runId, null);

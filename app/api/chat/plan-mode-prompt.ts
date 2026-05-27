@@ -14,7 +14,7 @@
  * 注入时机：当 thread.planMode === true 时，附在 buildProjectEngineerDeveloperRules
  * 输出末尾，跟 PermissionMode / shellApprovalPolicy 共存。
  *
- * Toolset 配合：plan 模式下 chat workflow 会从 toolset 过滤掉
+ * Toolset 配合：plan 模式下 chat loop 会从 toolset 过滤掉
  * `update_plan` / `write` / `edit`（agent 看不见就不会调）。
  */
 

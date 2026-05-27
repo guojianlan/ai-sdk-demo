@@ -136,7 +136,7 @@ export async function runSubAgent(args: {
 }) {
   const tools = await buildSubAgentToolset();
 
-  // 子 agent 也走 hook —— 跟主 workflow 同一套口径：
+  // 子 agent 也走 hook —— 跟主 chat loop 同一套口径：
   //   default registry（含 toolLogging）+ settings-derived（如开启的 dotenv-blocklist）
   // 不挂 hook 的话 dotenv blocklist 在 child 内部失效、log 行漏掉 child tool call，
   // 安全护栏会出现"父被拦、child 偷偷写"的口径割裂。

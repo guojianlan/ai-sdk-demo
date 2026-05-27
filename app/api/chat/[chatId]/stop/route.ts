@@ -1,5 +1,4 @@
-import { getRun } from "workflow/api";
-
+import { cancelActiveChatRun } from "@/lib/chat-agent/active-runs";
 import {
   compareAndSetActiveStreamId,
   getActiveStreamId,
@@ -21,7 +20,7 @@ export async function POST(
   }
 
   try {
-    await getRun(runId).cancel();
+    cancelActiveChatRun(runId);
   } catch {
     // If the run is already gone, clearing our pointer is still correct.
   }

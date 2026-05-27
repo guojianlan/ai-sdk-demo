@@ -32,6 +32,7 @@ import {
 
 import { ChatInput } from "./_components/ChatInput";
 import { EmptyState } from "./_components/EmptyState";
+import { FlowWorkspace } from "./_components/FlowWorkspace";
 import { MessageBubble } from "./_components/MessageBubble";
 import { PlanCard } from "./_components/PlanCard";
 import { SessionHeader } from "./_components/SessionHeader";
@@ -61,6 +62,7 @@ export default function Home() {
   const [workspacesError, setWorkspacesError] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [planMode, setPlanMode] = useState(false);
+  const [activeSurface, setActiveSurface] = useState<"chat" | "flows">("chat");
   // pendingPlanTask：非空字符串表示底部要展示一张 PlanCard 给用户 review。
   const [pendingPlanTask, setPendingPlanTask] = useState("");
 
@@ -284,8 +286,8 @@ export default function Home() {
     //    需要把回执发回服务器让 AI SDK 执行 tool。
     // 2) ask_user_question / ask_choice / show_reference 这类无 server execute 的
     //    client tool 已由浏览器写入 output，需要把这个 human response 发回后端。
-    // 普通 server tool output 的续跑归 runAgentWorkflow 的 outer loop 管，
-    // 这里不能再用 lastAssistantMessageIsCompleteWithToolCalls，否则会开新 workflow。
+    // 普通 server tool output 的续跑归后端 chat loop 管，
+    // 这里不能再用 lastAssistantMessageIsCompleteWithToolCalls，否则会开新 run。
     sendAutomaticallyWhen: ({ messages: currentMessages }) =>
       lastAssistantMessageIsCompleteWithApprovalResponses({
         messages: currentMessages,
@@ -395,7 +397,7 @@ export default function Home() {
         method: "POST",
       });
     } catch (stopError) {
-      console.error("Failed to stop workflow", stopError);
+      console.error("Failed to stop chat run", stopError);
     }
   }
 
@@ -599,14 +601,22 @@ export default function Home() {
         <SessionSidebar
           sessions={sessions}
           activeChatId={activeChatId}
+          activeSurface={activeSurface}
           workspaces={workspaces}
           workspacesLoading={workspacesLoading}
           workspacesError={workspacesError}
+          onSurfaceChange={setActiveSurface}
           onNewSession={() => setPickerOpen(true)}
           onSelectSession={(id) => void handleSelectSession(id)}
         />
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {activeSurface === "flows" ? (
+            <FlowWorkspace
+              workspaces={workspaces}
+              workspacesLoading={workspacesLoading}
+            />
+          ) : (
           <div className="mx-auto flex h-full min-h-0 w-full max-w-[1120px] flex-1 flex-col overflow-hidden px-5 py-6 sm:px-8 lg:px-10">
             <SessionHeader
               activeSession={activeSession}
@@ -703,6 +713,7 @@ export default function Home() {
               />
             </div>
           </div>
+          )}
         </section>
       </div>
 

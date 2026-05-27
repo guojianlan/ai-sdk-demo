@@ -36,6 +36,81 @@ const THREAD_ACTIVE_CONTEXT_SQL = `
   );
 `;
 
+const FLOWS_SQL = `
+  CREATE TABLE IF NOT EXISTS flows (
+    id             TEXT PRIMARY KEY,
+    title          TEXT NOT NULL,
+    description    TEXT,
+    workspace_root TEXT NOT NULL,
+    workspace_name TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    archived_at    INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_flows_updated
+    ON flows(updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_flows_archived
+    ON flows(archived_at);
+
+  CREATE TABLE IF NOT EXISTS flow_nodes (
+    id          TEXT PRIMARY KEY,
+    flow_id     TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    position_x  REAL NOT NULL,
+    position_y  REAL NOT NULL,
+    config_json TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_nodes_flow
+    ON flow_nodes(flow_id);
+
+  CREATE TABLE IF NOT EXISTS flow_edges (
+    id             TEXT PRIMARY KEY,
+    flow_id        TEXT NOT NULL,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    condition_json TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_edges_flow
+    ON flow_edges(flow_id);
+
+  CREATE TABLE IF NOT EXISTS flow_runs (
+    id          TEXT PRIMARY KEY,
+    flow_id     TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    input_json  TEXT NOT NULL,
+    output_json TEXT,
+    error       TEXT,
+    started_at  INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_runs_flow
+    ON flow_runs(flow_id, started_at DESC);
+
+  CREATE TABLE IF NOT EXISTS flow_node_runs (
+    id                   TEXT PRIMARY KEY,
+    flow_run_id          TEXT NOT NULL,
+    node_id              TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    input_json           TEXT NOT NULL,
+    output_json          TEXT,
+    transcript_thread_id TEXT,
+    error                TEXT,
+    started_at           INTEGER NOT NULL,
+    finished_at          INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_node_runs_run
+    ON flow_node_runs(flow_run_id);
+`;
+
+const FLOW_NODE_RUN_TRACE_SQL = `
+  ALTER TABLE flow_node_runs ADD COLUMN trace_json TEXT;
+`;
+
 /**
  * 历史 migrations。**只追加，不修改**。
  *
@@ -152,6 +227,16 @@ const MIGRATIONS: Migration[] = [
     name: "add-thread-active-context",
     sql: THREAD_ACTIVE_CONTEXT_SQL,
   },
+  {
+    version: 7,
+    name: "add-native-flows",
+    sql: FLOWS_SQL,
+  },
+  {
+    version: 8,
+    name: "add-flow-node-run-trace",
+    sql: FLOW_NODE_RUN_TRACE_SQL,
+  },
 ];
 
 /** 启动时跑：把 user_version 推到 latest，途中遇到失败抛错。 */
@@ -196,4 +281,19 @@ export function applyMigrations(db: DatabaseType): void {
  */
 function ensureSchemaInvariants(db: DatabaseType): void {
   db.exec(THREAD_ACTIVE_CONTEXT_SQL);
+  db.exec(FLOWS_SQL);
+  ensureColumn(db, "flow_node_runs", "trace_json", "TEXT");
+}
+
+function ensureColumn(
+  db: DatabaseType,
+  tableName: string,
+  columnName: string,
+  columnSql: string,
+): void {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+    name: string;
+  }>;
+  if (rows.some((row) => row.name === columnName)) return;
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSql}`);
 }

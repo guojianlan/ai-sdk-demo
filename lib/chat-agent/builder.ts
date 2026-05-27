@@ -77,7 +77,7 @@ export type ChatAgentConfig<
   /**
    * P9-c：本轮 UserPromptSubmit / SessionStart hook 收集到的
    * `additionalContexts` + `systemMessages`。route 在 POST 入口跑完 hook 之后
-   * 把这些字符串穿过 workflow 传到这里 —— builder 调 buildSystemPrompt 时
+   * 把这些字符串穿过 chat loop 传到这里 —— builder 调 buildSystemPrompt 时
    * 作为 `hookContexts` 注入 system prompt 末尾。
    * 不传或空数组 = 这层不出现。
    */
@@ -92,7 +92,7 @@ export function createChatAgent<
     model: config.model,
     instructions: config.persona,
     // 内层 loop 上限固定为 1：每次 agent.stream 只跑"一次 LLM 调用 + 它本轮的 tool 执行"，
-    // 真正的多步循环在 app/workflows/chat.ts 的外层 for 里手写，由 OUTER_STEP_LIMIT 控制。
+    // 真正的多步循环在 lib/chat-agent/run-loop.ts 的外层 for 里手写，由 OUTER_STEP_LIMIT 控制。
     // 这样可以在每步之间做 saveMessages / shouldPauseForToolInteraction / abort 检查。
     stopWhen: stepCountIs(1),
     callOptionsSchema: config.callOptionsSchema,

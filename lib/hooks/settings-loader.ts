@@ -153,7 +153,7 @@ function registerOne(
 /**
  * 把 `src` 注册表里的所有 hook 复制注册到 `dest`。
  *
- * 用途：workflow 里把 `defaultHookRegistry`（默认挂日志）和 settings-derived
+ * 用途：chat loop 里把 `defaultHookRegistry`（默认挂日志）和 settings-derived
  * registry 合到一个跑流水线 —— 而不是把 default 改成可变全局。
  * 调用顺序：先 default，后 settings → settings 声明的 hook 排在后面跑。
  */

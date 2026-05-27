@@ -44,13 +44,37 @@ export {
   type ThreadActiveContext,
 } from "./active-context";
 
-// workflow runtime state
+// active chat runtime state
 export {
   getActiveStreamId,
   setActiveStreamId,
   compareAndSetActiveStreamId,
   deleteRuntimeState,
 } from "./runtime";
+
+// native flow canvas
+export {
+  listFlows,
+  createFlow,
+  getFlowWithGraph,
+  createFlowNode,
+  createFlowEdge,
+  createFlowRun,
+  updateFlowRun,
+  createFlowNodeRun,
+  updateFlowNodeRun,
+  listFlowRuns,
+  getFlowRunWithNodes,
+  type FlowDefinition,
+  type FlowNode,
+  type FlowEdge,
+  type FlowNodeType,
+  type FlowWithGraph,
+  type FlowRun,
+  type FlowNodeRun,
+  type FlowRunStatus,
+  type FlowRunWithNodes,
+} from "./flows";
 
 // JSONL 类型（给将来 memory 管线用）
 export type { SessionLine, SessionMetaPayload } from "./jsonl";

@@ -41,7 +41,7 @@ function getLastStepToolParts(message: UIMessage): ToolLikePart[] {
 /**
  * Client-side auto-submit is only for tools whose output is produced by the
  * browser after a human interaction. Server-side tool results are continued by
- * the backend workflow loop and must not create a new POST/workflow run.
+ * the backend chat loop and must not create a new POST/chat run.
  */
 export function lastAssistantMessageHasCompletedClientContinuationTool({
   messages,

@@ -1,9 +1,9 @@
 import { getDb } from "./db";
 
 /**
- * Workflow runtime 状态 —— 移植自原 chat-store。
+ * Chat runtime 状态 —— 移植自原 chat-store。
  *
- * `active_stream_id` 指向当前正在跑的 workflow run id；用于：
+ * `active_stream_id` 指向当前正在跑的 local chat run id；用于：
  * - 断流恢复：客户端 reconnect 时 server 检查这个值，能 resume 已有 run
  * - 并发冲突：第二个 POST 进来时检查，已有 run 在跑就拒绝
  *
@@ -89,12 +89,12 @@ export function deleteRuntimeState(threadId: string): void {
 }
 
 /**
- * 启动时一次性清掉所有 active_stream_id —— 因为 workflow run id 是进程内的，
+ * 启动时一次性清掉所有 active_stream_id —— 因为 local chat run id 是进程内的，
  * **dev server 一重启就全失效**。残留下来会让 `reconcileExistingActiveStream`
- * 去 `getRun(stale_id).status`，部分 workflow 实现里这一步是 await 等到永远，
+ * 去等待一个不存在的本地 run，表现就是新 chat 请求挂死。
  * 表现就是新 chat 请求挂死。
  *
- * 在 dev 形态下这是必需的清扫；production 形态下如果将来用持久化 workflow
+ * 在 dev 形态下这是必需的清扫；production 形态下如果将来用持久化 run
  * runtime（重启后能恢复 run），这里要改成"按 process id 比对再清"。
  *
  * 调用点：`db.ts` 在 `applyMigrations` 之后调一次，即每个进程生命周期一次。

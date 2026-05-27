@@ -11,7 +11,7 @@
  *   P5 升级到 codex 风格的全能子 agent，详见 lib/tools/spawn-agent.ts 顶部）
  *
  * （ask_choice / show_reference 是我们自家的，open-agents 没对应物。
- *  weather MCP tools 在请求时由 chat workflow 动态合并进来，不在此处。）
+ *  weather MCP tools 在请求时由 chat loop 动态合并进来，不在此处。）
  */
 
 import { askChoiceTool } from "./ask-choice";
@@ -45,7 +45,7 @@ export {
 };
 
 // Toolset 分组——按"用途 + access mode"组合。
-// chat workflow 根据 access mode 决定挂哪几组（参考 app/workflows/chat.ts）。
+// chat loop 根据 access mode 决定挂哪几组（参考 lib/chat-agent/run-loop.ts）。
 
 /** 只读工作区工具：read / glob / grep。workspace-tools mode 下挂上。 */
 export const workspaceToolset = {
@@ -108,7 +108,7 @@ export const skillToolset = {
  * **不进 subAgentToolset**：子 agent 是临时执行单元，没必要让它写用户级长期
  * 记忆——主 agent 自己 commit memory 就够了。
  *
- * 项目级 settings.json `memoryEnabled: false` 时，chat workflow 会过滤掉这一组。
+ * 项目级 settings.json `memoryEnabled: false` 时，chat loop 会过滤掉这一组。
  */
 export const memoryToolset = {
   memory_write: memoryWriteTool,
