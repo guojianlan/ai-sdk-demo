@@ -49,19 +49,29 @@ export function getDb(): DatabaseType {
   db.pragma("foreign_keys = ON");
   applyMigrations(db);
 
-  // 启动时清掉 stale active_stream_id —— local chat run id 是进程内的，重启全失效。
-  // 残留会让新 chat 请求在 reconcileExistingActiveStream 里 await 一个永远不存在的
-  // run 状态，表现成"chat 接口挂死"。详见 runtime.ts:clearStaleRuntimeOnBoot 注释。
+  // 启动时把 stale chat_runs 标成 interrupted，再清掉 active_stream_id。
+  // live stream 仍是进程内资源，重启后无法继续 replay；SQLite 留下可审计状态。
   try {
-    const result = db
+    const now = Date.now();
+    const interrupted = db
+      .prepare(
+        `UPDATE chat_runs
+            SET status = 'interrupted',
+                error = COALESCE(error, 'Process restarted before the local stream finished.'),
+                updated_at = ?,
+                finished_at = ?
+          WHERE status = 'running'`,
+      )
+      .run(now, now);
+    const cleared = db
       .prepare(
         `UPDATE thread_runtime_state SET active_stream_id = NULL
          WHERE active_stream_id IS NOT NULL`,
       )
       .run();
-    if (result.changes > 0) {
+    if (cleared.changes > 0 || interrupted.changes > 0) {
       console.log(
-        `[persistence] cleared ${result.changes} stale active_stream_id row(s) on boot`,
+        `[persistence] interrupted ${interrupted.changes} stale chat run(s) and cleared ${cleared.changes} active_stream_id row(s) on boot`,
       );
     }
   } catch {

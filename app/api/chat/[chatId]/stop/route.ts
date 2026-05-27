@@ -1,6 +1,7 @@
 import { cancelActiveChatRun } from "@/lib/chat-agent/active-runs";
 import {
   compareAndSetActiveStreamId,
+  finishChatRunRecord,
   getActiveStreamId,
 } from "@/lib/persistence";
 
@@ -26,5 +27,10 @@ export async function POST(
   }
 
   compareAndSetActiveStreamId(normalized, runId, null);
+  try {
+    finishChatRunRecord({ id: runId, status: "cancelled" });
+  } catch {
+    // Stale active_stream_id rows can predate persisted chat run records.
+  }
   return Response.json({ stopped: true, runId });
 }

@@ -18,6 +18,8 @@ import type { ShellApprovalPolicy } from "@/lib/tools";
 import { sanitizeChatUIMessages } from "@/lib/chat/sanitize-messages";
 import {
   compareAndSetActiveStreamId,
+  createChatRunRecord,
+  finishChatRunRecord,
   getActiveStreamId,
   loadActiveContext,
   loadMessages,
@@ -375,6 +377,7 @@ export async function POST(request: Request) {
       { status: 409 },
     );
   }
+  createChatRunRecord({ id: runId, threadId: chatId });
 
   const abortController = new AbortController();
   const source = createUIMessageStream<UIMessage>({
@@ -400,6 +403,14 @@ export async function POST(request: Request) {
             hookContexts,
           },
         });
+        finishChatRunRecord({ id: runId, status: "finished" });
+      } catch (error) {
+        finishChatRunRecord({
+          id: runId,
+          status: abortController.signal.aborted ? "cancelled" : "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
       } finally {
         compareAndSetActiveStreamId(chatId, runId, null);
       }
@@ -525,8 +536,12 @@ async function reconcileExistingActiveStream(
           ),
         };
       }
+      if (!run) {
+        markChatRunInterrupted(currentStreamId);
+      }
     } catch {
       // Run not found, inaccessible, or already collected. Try clearing below.
+      markChatRunInterrupted(currentStreamId);
     }
 
     const cleared = compareAndSetActiveStreamId(chatId, currentStreamId, null);
@@ -538,4 +553,17 @@ async function reconcileExistingActiveStream(
   }
 
   return currentStreamId ? { action: "conflict" } : { action: "ready" };
+}
+
+function markChatRunInterrupted(runId: string): void {
+  try {
+    finishChatRunRecord({
+      id: runId,
+      status: "interrupted",
+      error: "Active stream pointer existed but no live local run was available.",
+    });
+  } catch {
+    // Older rows or stale pointers can exist without a chat_runs row. Clearing
+    // active_stream_id is the behavior that matters for the next request.
+  }
 }

@@ -111,6 +111,22 @@ const FLOW_NODE_RUN_TRACE_SQL = `
   ALTER TABLE flow_node_runs ADD COLUMN trace_json TEXT;
 `;
 
+const CHAT_RUNS_SQL = `
+  CREATE TABLE IF NOT EXISTS chat_runs (
+    id          TEXT PRIMARY KEY,
+    thread_id   TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    error       TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_runs_thread
+    ON chat_runs(thread_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_chat_runs_status
+    ON chat_runs(status);
+`;
+
 /**
  * 历史 migrations。**只追加，不修改**。
  *
@@ -237,6 +253,11 @@ const MIGRATIONS: Migration[] = [
     name: "add-flow-node-run-trace",
     sql: FLOW_NODE_RUN_TRACE_SQL,
   },
+  {
+    version: 9,
+    name: "add-chat-run-records",
+    sql: CHAT_RUNS_SQL,
+  },
 ];
 
 /** 启动时跑：把 user_version 推到 latest，途中遇到失败抛错。 */
@@ -282,6 +303,7 @@ export function applyMigrations(db: DatabaseType): void {
 function ensureSchemaInvariants(db: DatabaseType): void {
   db.exec(THREAD_ACTIVE_CONTEXT_SQL);
   db.exec(FLOWS_SQL);
+  db.exec(CHAT_RUNS_SQL);
   ensureColumn(db, "flow_node_runs", "trace_json", "TEXT");
 }
 

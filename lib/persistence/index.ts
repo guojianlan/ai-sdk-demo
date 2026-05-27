@@ -50,6 +50,12 @@ export {
   setActiveStreamId,
   compareAndSetActiveStreamId,
   deleteRuntimeState,
+  createChatRunRecord,
+  getChatRunRecord,
+  listChatRunRecords,
+  finishChatRunRecord,
+  type ChatRunRecord,
+  type ChatRunStatus,
 } from "./runtime";
 
 // native flow canvas

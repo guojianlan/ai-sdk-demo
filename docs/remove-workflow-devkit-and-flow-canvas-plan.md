@@ -767,6 +767,14 @@ Completed:
   - while dragging, the canvas shows a dashed preview connection and highlights the current target node;
   - persisted edges now render as curved paths with arrowheads instead of plain straight lines;
   - the existing toolbar-based source/target connector remains available for condition JSON entry.
+- Resolved the local active chat run durability boundary:
+  - added a persisted `chat_runs` registry for chat run metadata and status;
+  - `/api/chat` now records each run as `running`, then finalizes it as `finished`, `failed`, or `cancelled`;
+  - `/api/chat/[chatId]/stop` finalizes the active run as `cancelled`;
+  - reconnect paths mark stale active pointers as `interrupted` when no live in-process run exists;
+  - process boot marks any leftover `running` rows as `interrupted` and clears `active_stream_id`;
+  - added `GET /api/chat/[chatId]/runs` for local inspection of persisted chat run records;
+  - live chunk replay remains intentionally same-process only because the readable stream and subscribers are process resources.
 
 Verified:
 
@@ -807,7 +815,9 @@ Verified:
 - `npx tsc --noEmit` after adding port drag edge creation and curved edge paths.
 - `npm run lint` after adding port drag edge creation and curved edge paths.
 - Playwright smoke: created a flow plus `Port Target`, opened Flows on `127.0.0.1:3002`, dragged from the Start output port onto the target node, verified `GET /api/flows/[flowId]` persisted the new `Start -> Port Target` edge, archived the temporary flow, and captured `/tmp/ai-sdk-demo-flow-port-connect-ui.png`.
+- `npx tsc --noEmit` after adding persisted chat run records.
+- `npm run lint` after adding persisted chat run records.
+- API smoke: created a synthetic persisted `running` chat run and active stream pointer, called `GET /api/chat/[chatId]/stream`, verified the endpoint returned `204`, verified `GET /api/chat/[chatId]/runs` reported the run as `interrupted`, then cleaned up the temporary runtime rows.
 
 Remaining:
-
-- Decide whether local active chat run replay should remain process-local only or become durable across process restarts.
+- No known plan items remain open in this document. Completion still requires a final audit against the original user-facing product goal and current code.

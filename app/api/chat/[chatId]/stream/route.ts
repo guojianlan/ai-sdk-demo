@@ -8,6 +8,7 @@ import {
 } from "@/lib/chat-agent/active-runs";
 import {
   compareAndSetActiveStreamId,
+  finishChatRunRecord,
   getActiveStreamId,
 } from "@/lib/persistence";
 import {
@@ -42,6 +43,9 @@ export async function GET(
   try {
     const run = getActiveChatRun(runId);
     if (!run || run.status !== "running") {
+      if (!run) {
+        markChatRunInterrupted(runId);
+      }
       compareAndSetActiveStreamId(normalized, runId, null);
       return new Response(null, { status: 204 });
     }
@@ -55,7 +59,20 @@ export async function GET(
       headers: { "x-chat-run-id": runId },
     });
   } catch {
+    markChatRunInterrupted(runId);
     compareAndSetActiveStreamId(normalized, runId, null);
     return new Response(null, { status: 204 });
+  }
+}
+
+function markChatRunInterrupted(runId: string): void {
+  try {
+    finishChatRunRecord({
+      id: runId,
+      status: "interrupted",
+      error: "Reconnect found an active stream pointer without a live local run.",
+    });
+  } catch {
+    // Stale dev rows may predate chat_runs. Returning 204 is still correct.
   }
 }

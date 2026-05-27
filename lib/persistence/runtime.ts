@@ -14,6 +14,45 @@ type RuntimeRow = {
   active_stream_id: string | null;
 };
 
+export type ChatRunStatus =
+  | "running"
+  | "finished"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export type ChatRunRecord = {
+  id: string;
+  threadId: string;
+  status: ChatRunStatus;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  finishedAt: number | null;
+};
+
+type ChatRunRow = {
+  id: string;
+  thread_id: string;
+  status: string;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  finished_at: number | null;
+};
+
+function rowToChatRun(row: ChatRunRow): ChatRunRecord {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    status: normalizeChatRunStatus(row.status),
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    finishedAt: row.finished_at,
+  };
+}
+
 export function getActiveStreamId(threadId: string): string | null {
   const row = getDb()
     .prepare<[string], RuntimeRow>(
@@ -88,11 +127,69 @@ export function deleteRuntimeState(threadId: string): void {
     .run(threadId);
 }
 
+export function createChatRunRecord(opts: {
+  id: string;
+  threadId: string;
+  status?: ChatRunStatus;
+}): ChatRunRecord {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `INSERT INTO chat_runs
+         (id, thread_id, status, error, created_at, updated_at, finished_at)
+       VALUES (?, ?, ?, NULL, ?, ?, NULL)
+       ON CONFLICT(id) DO UPDATE SET
+         thread_id = excluded.thread_id,
+         status = excluded.status,
+         error = NULL,
+         updated_at = excluded.updated_at,
+         finished_at = NULL`,
+    )
+    .run(opts.id, opts.threadId, opts.status ?? "running", now, now);
+  return getChatRunRecord(opts.id);
+}
+
+export function getChatRunRecord(runId: string): ChatRunRecord {
+  const row = getDb()
+    .prepare<[string], ChatRunRow>(`SELECT * FROM chat_runs WHERE id = ?`)
+    .get(runId);
+  if (!row) throw new Error("Chat run not found.");
+  return rowToChatRun(row);
+}
+
+export function listChatRunRecords(threadId: string): ChatRunRecord[] {
+  const rows = getDb()
+    .prepare<[string], ChatRunRow>(
+      `SELECT * FROM chat_runs
+        WHERE thread_id = ?
+        ORDER BY created_at DESC`,
+    )
+    .all(threadId);
+  return rows.map(rowToChatRun);
+}
+
+export function finishChatRunRecord(opts: {
+  id: string;
+  status: Exclude<ChatRunStatus, "running">;
+  error?: string | null;
+}): void {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE chat_runs
+          SET status = ?,
+              error = ?,
+              updated_at = ?,
+              finished_at = ?
+        WHERE id = ?`,
+    )
+    .run(opts.status, opts.error ?? null, now, now, opts.id);
+}
+
 /**
- * 启动时一次性清掉所有 active_stream_id —— 因为 local chat run id 是进程内的，
- * **dev server 一重启就全失效**。残留下来会让 `reconcileExistingActiveStream`
- * 去等待一个不存在的本地 run，表现就是新 chat 请求挂死。
- * 表现就是新 chat 请求挂死。
+ * 启动时一次性中断所有未完成 chat run 并清掉 active_stream_id。
+ * live stream reader/subscriber 仍是进程内资源，dev server 一重启就全失效；
+ * SQLite 负责保留 run metadata，让历史上"为什么没法继续 live replay"有证据。
  *
  * 在 dev 形态下这是必需的清扫；production 形态下如果将来用持久化 run
  * runtime（重启后能恢复 run），这里要改成"按 process id 比对再清"。
@@ -101,15 +198,27 @@ export function deleteRuntimeState(threadId: string): void {
  */
 export function clearStaleRuntimeOnBoot(): void {
   try {
-    const result = getDb()
+    const db = getDb();
+    const now = Date.now();
+    const interrupted = db
+      .prepare(
+        `UPDATE chat_runs
+            SET status = 'interrupted',
+                error = COALESCE(error, 'Process restarted before the local stream finished.'),
+                updated_at = ?,
+                finished_at = ?
+          WHERE status = 'running'`,
+      )
+      .run(now, now);
+    const cleared = db
       .prepare(
         `UPDATE thread_runtime_state SET active_stream_id = NULL
          WHERE active_stream_id IS NOT NULL`,
       )
       .run();
-    if (result.changes > 0) {
+    if (cleared.changes > 0 || interrupted.changes > 0) {
       console.log(
-        `[persistence] cleared ${result.changes} stale active_stream_id rows on boot`,
+        `[persistence] interrupted ${interrupted.changes} stale chat run(s) and cleared ${cleared.changes} active_stream_id row(s) on boot`,
       );
     }
   } catch (error) {
@@ -118,4 +227,13 @@ export function clearStaleRuntimeOnBoot(): void {
       error instanceof Error ? error.message : error,
     );
   }
+}
+
+function normalizeChatRunStatus(status: string): ChatRunStatus {
+  return status === "finished" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "interrupted"
+    ? status
+    : "running";
 }
