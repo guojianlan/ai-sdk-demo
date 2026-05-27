@@ -56,6 +56,11 @@ const MAX_ZOOM = 1.8;
 const MINIMAP_WIDTH = 180;
 const MINIMAP_HEIGHT = 120;
 
+type NodePositionPatch = {
+  nodeId: string;
+  position: { x: number; y: number };
+};
+
 export function FlowWorkspace({
   workspaces,
   workspacesLoading,
@@ -73,6 +78,7 @@ export function FlowWorkspace({
   const [edgeTarget, setEdgeTarget] = useState("");
   const [edgeConditionDraft, setEdgeConditionDraft] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState("");
   const [runs, setRuns] = useState<FlowRun[]>([]);
   const [activeRun, setActiveRun] = useState<FlowRunWithNodes | null>(null);
@@ -121,6 +127,7 @@ export function FlowWorkspace({
         setEdgeSource(nextGraph.nodes[0]?.id ?? "");
         setEdgeTarget(nextGraph.nodes[1]?.id ?? nextGraph.nodes[0]?.id ?? "");
         setSelectedNodeId(nextGraph.nodes[0]?.id ?? "");
+        setSelectedNodeIds(nextGraph.nodes[0] ? [nextGraph.nodes[0].id] : []);
         setSelectedEdgeId("");
       })
       .catch((loadError) => {
@@ -180,6 +187,7 @@ export function FlowWorkspace({
       setRuns([]);
       setActiveRun(null);
       setSelectedNodeId(created.nodes[0]?.id ?? "");
+      setSelectedNodeIds(created.nodes[0] ? [created.nodes[0].id] : []);
       setSelectedEdgeId("");
     } catch (createError) {
       setError(
@@ -204,6 +212,7 @@ export function FlowWorkspace({
       setGraph({ ...graph, nodes: [...graph.nodes, node] });
       setEdgeTarget(node.id);
       setSelectedNodeId(node.id);
+      setSelectedNodeIds([node.id]);
       setSelectedEdgeId("");
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "添加节点失败");
@@ -263,10 +272,17 @@ export function FlowWorkspace({
       setEdgeSource(edge.sourceNodeId);
       setEdgeTarget(edge.targetNodeId);
       setSelectedNodeId("");
+      setSelectedNodeIds([]);
       setSelectedEdgeId(edge.id);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "连接节点失败");
     }
+  }
+
+  function handleSelectNodes(nodeIds: string[], primaryNodeId?: string) {
+    setSelectedEdgeId("");
+    setSelectedNodeIds(nodeIds);
+    setSelectedNodeId(primaryNodeId ?? nodeIds[0] ?? "");
   }
 
   async function handleSaveNode(params: {
@@ -289,6 +305,9 @@ export function FlowWorkspace({
         nodes: graph.nodes.map((item) => (item.id === node.id ? node : item)),
       });
       setSelectedNodeId(node.id);
+      setSelectedNodeIds((current) =>
+        current.includes(node.id) ? current : [node.id],
+      );
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存节点失败");
     } finally {
@@ -296,39 +315,43 @@ export function FlowWorkspace({
     }
   }
 
-  function handlePreviewNodePosition(
-    nodeId: string,
-    position: { x: number; y: number },
-  ) {
+  function handlePreviewNodePositions(patches: NodePositionPatch[]) {
     setGraph((current) => {
       if (!current) return current;
+      const positionByNodeId = new Map(
+        patches.map((patch) => [patch.nodeId, patch.position]),
+      );
       return {
         ...current,
         nodes: current.nodes.map((node) =>
-          node.id === nodeId ? { ...node, position } : node,
+          positionByNodeId.has(node.id)
+            ? { ...node, position: positionByNodeId.get(node.id) ?? node.position }
+            : node,
         ),
       };
     });
   }
 
-  async function handleCommitNodePosition(
-    nodeId: string,
-    position: { x: number; y: number },
-  ) {
+  async function handleCommitNodePositions(patches: NodePositionPatch[]) {
     if (!graph) return;
     setError("");
     try {
-      const node = await updateFlowNodeOnApi({
-        flowId: graph.flow.id,
-        nodeId,
-        position,
-      });
+      const nodes = await Promise.all(
+        patches.map((patch) =>
+          updateFlowNodeOnApi({
+            flowId: graph.flow.id,
+            nodeId: patch.nodeId,
+            position: patch.position,
+          }),
+        ),
+      );
       setGraph((current) => {
         if (!current) return current;
+        const nodeById = new Map(nodes.map((node) => [node.id, node]));
         return {
           ...current,
           nodes: current.nodes.map((item) =>
-            item.id === node.id ? node : item,
+            nodeById.get(item.id) ?? item,
           ),
         };
       });
@@ -357,6 +380,11 @@ export function FlowWorkspace({
         edges: remainingEdges,
       });
       setSelectedNodeId(remainingNodes[0]?.id ?? "");
+      setSelectedNodeIds((current) => {
+        const remainingIds = new Set(remainingNodes.map((node) => node.id));
+        const next = current.filter((nodeId) => remainingIds.has(nodeId));
+        return next.length > 0 ? next : remainingNodes[0] ? [remainingNodes[0].id] : [];
+      });
       setSelectedEdgeId("");
       setEdgeSource(remainingNodes[0]?.id ?? "");
       setEdgeTarget(remainingNodes[1]?.id ?? remainingNodes[0]?.id ?? "");
@@ -447,6 +475,7 @@ export function FlowWorkspace({
       setRuns([]);
       setActiveRun(null);
       setSelectedNodeId("");
+      setSelectedNodeIds([]);
       setSelectedEdgeId("");
       const nextFlowId = flows.find((flow) => flow.id !== archived.id)?.id ?? "";
       setActiveFlowId(nextFlowId);
@@ -551,14 +580,13 @@ export function FlowWorkspace({
             onEdgeTargetChange={setEdgeTarget}
             onEdgeConditionDraftChange={setEdgeConditionDraft}
             selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
             selectedEdgeId={selectedEdgeId}
-            onSelectedNodeChange={(nodeId) => {
-              setSelectedNodeId(nodeId);
-              setSelectedEdgeId("");
-            }}
+            onSelectedNodesChange={handleSelectNodes}
             onSelectedEdgeChange={(edgeId) => {
               setSelectedEdgeId(edgeId);
               setSelectedNodeId("");
+              setSelectedNodeIds([]);
             }}
             runs={runs}
             activeRun={activeRun}
@@ -575,9 +603,9 @@ export function FlowWorkspace({
             onSaveFlow={(params) => void handleSaveFlow(params)}
             onArchiveFlow={() => void handleArchiveFlow()}
             onSaveNode={(params) => void handleSaveNode(params)}
-            onPreviewNodePosition={handlePreviewNodePosition}
-            onCommitNodePosition={(nodeId, position) =>
-              void handleCommitNodePosition(nodeId, position)
+            onPreviewNodePositions={handlePreviewNodePositions}
+            onCommitNodePositions={(patches) =>
+              void handleCommitNodePositions(patches)
             }
             onSaveEdge={(params) => void handleSaveEdge(params)}
             onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
@@ -604,8 +632,9 @@ function FlowEditor({
   onEdgeTargetChange,
   onEdgeConditionDraftChange,
   selectedNodeId,
+  selectedNodeIds,
   selectedEdgeId,
-  onSelectedNodeChange,
+  onSelectedNodesChange,
   onSelectedEdgeChange,
   runs,
   activeRun,
@@ -622,8 +651,8 @@ function FlowEditor({
   onSaveFlow,
   onArchiveFlow,
   onSaveNode,
-  onPreviewNodePosition,
-  onCommitNodePosition,
+  onPreviewNodePositions,
+  onCommitNodePositions,
   onSaveEdge,
   onDeleteNode,
   onDeleteEdge,
@@ -638,8 +667,9 @@ function FlowEditor({
   onEdgeTargetChange: (id: string) => void;
   onEdgeConditionDraftChange: (value: string) => void;
   selectedNodeId: string;
+  selectedNodeIds: string[];
   selectedEdgeId: string;
-  onSelectedNodeChange: (id: string) => void;
+  onSelectedNodesChange: (ids: string[], primaryNodeId?: string) => void;
   onSelectedEdgeChange: (id: string) => void;
   runs: FlowRun[];
   activeRun: FlowRunWithNodes | null;
@@ -660,26 +690,20 @@ function FlowEditor({
     title: string;
     config: unknown;
   }) => void;
-  onPreviewNodePosition: (
-    nodeId: string,
-    position: { x: number; y: number },
-  ) => void;
-  onCommitNodePosition: (
-    nodeId: string,
-    position: { x: number; y: number },
-  ) => void;
+  onPreviewNodePositions: (patches: NodePositionPatch[]) => void;
+  onCommitNodePositions: (patches: NodePositionPatch[]) => void;
   onSaveEdge: (params: { edgeId: string; condition: unknown | null }) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
-    nodeId: string;
+    nodeIds: string[];
     pointerId: number;
     startClientX: number;
     startClientY: number;
-    startPosition: { x: number; y: number };
-    lastPosition: { x: number; y: number };
+    startPositions: Record<string, { x: number; y: number }>;
+    lastPositions: Record<string, { x: number; y: number }>;
   } | null>(null);
   const panRef = useRef<{
     pointerId: number;
@@ -687,13 +711,29 @@ function FlowEditor({
     startClientY: number;
     startPan: { x: number; y: number };
   } | null>(null);
+  const selectionRef = useRef<{
+    pointerId: number;
+    additive: boolean;
+    start: { x: number; y: number };
+    current: { x: number; y: number };
+  } | null>(null);
   const [viewport, setViewport] = useState({
     pan: { x: 0, y: 0 },
     scale: 1,
   });
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [draggingNodeId, setDraggingNodeId] = useState("");
+  const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([]);
   const [panning, setPanning] = useState(false);
+  const [selectionBox, setSelectionBox] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const selectedNodeIdSet = useMemo(
+    () => new Set(selectedNodeIds),
+    [selectedNodeIds],
+  );
   const selectedNode = selectedNodeId
     ? graph.nodes.find((node) => node.id === selectedNodeId)
     : undefined;
@@ -708,6 +748,54 @@ function FlowEditor({
       x: clamp(Math.round(position.x), 0, CANVAS_WIDTH - NODE_WIDTH),
       y: clamp(Math.round(position.y), 0, CANVAS_HEIGHT - NODE_HEIGHT),
     };
+  }
+
+  function clientPointToCanvasPoint(event: ReactPointerEvent<HTMLElement>) {
+    const viewportElement = viewportRef.current;
+    if (!viewportElement) return { x: 0, y: 0 };
+    const rect = viewportElement.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left - viewport.pan.x) / viewport.scale,
+      y: (event.clientY - rect.top - viewport.pan.y) / viewport.scale,
+    };
+  }
+
+  function normalizeSelectionBox(
+    start: { x: number; y: number },
+    current: { x: number; y: number },
+  ) {
+    const x = clamp(Math.min(start.x, current.x), 0, CANVAS_WIDTH);
+    const y = clamp(Math.min(start.y, current.y), 0, CANVAS_HEIGHT);
+    const right = clamp(Math.max(start.x, current.x), 0, CANVAS_WIDTH);
+    const bottom = clamp(Math.max(start.y, current.y), 0, CANVAS_HEIGHT);
+    return {
+      x,
+      y,
+      width: right - x,
+      height: bottom - y,
+    };
+  }
+
+  function getNodeIdsInsideBox(box: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) {
+    const right = box.x + box.width;
+    const bottom = box.y + box.height;
+    return graph.nodes
+      .filter((node) => {
+        const nodeRight = node.position.x + NODE_WIDTH;
+        const nodeBottom = node.position.y + NODE_HEIGHT;
+        return (
+          node.position.x <= right &&
+          nodeRight >= box.x &&
+          node.position.y <= bottom &&
+          nodeBottom >= box.y
+        );
+      })
+      .map((node) => node.id);
   }
 
   function updateZoom(nextScale: number, center?: { x: number; y: number }) {
@@ -742,37 +830,68 @@ function FlowEditor({
     if (event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    onSelectedNodeChange(node.id);
+    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    const nextSelectedNodeIds = selectedNodeIdSet.has(node.id)
+      ? selectedNodeIds
+      : additive
+        ? [...selectedNodeIds, node.id]
+        : [node.id];
+    onSelectedNodesChange(nextSelectedNodeIds, node.id);
+    const startPositions = Object.fromEntries(
+      graph.nodes
+        .filter((item) => nextSelectedNodeIds.includes(item.id))
+        .map((item) => [item.id, item.position]),
+    );
     dragRef.current = {
-      nodeId: node.id,
+      nodeIds: nextSelectedNodeIds,
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startPosition: node.position,
-      lastPosition: node.position,
+      startPositions,
+      lastPositions: startPositions,
     };
-    setDraggingNodeId(node.id);
+    setDraggingNodeIds(nextSelectedNodeIds);
   }
 
-  function handleNodePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+  function handleNodePointerMove(event: ReactPointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
-    const nextPosition = clampNodePosition({
-      x: drag.startPosition.x + (event.clientX - drag.startClientX) / viewport.scale,
-      y: drag.startPosition.y + (event.clientY - drag.startClientY) / viewport.scale,
+    const deltaX = (event.clientX - drag.startClientX) / viewport.scale;
+    const deltaY = (event.clientY - drag.startClientY) / viewport.scale;
+    const patches = drag.nodeIds.flatMap((nodeId) => {
+      const startPosition = drag.startPositions[nodeId];
+      if (!startPosition) return [];
+      return [
+        {
+          nodeId,
+          position: clampNodePosition({
+            x: startPosition.x + deltaX,
+            y: startPosition.y + deltaY,
+          }),
+        },
+      ];
     });
-    drag.lastPosition = nextPosition;
-    onPreviewNodePosition(drag.nodeId, nextPosition);
+    drag.lastPositions = Object.fromEntries(
+      patches.map((patch) => [patch.nodeId, patch.position]),
+    );
+    onPreviewNodePositions(patches);
   }
 
-  function finishNodeDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+  function finishNodeDrag(event: ReactPointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    setDraggingNodeId("");
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    onCommitNodePosition(drag.nodeId, drag.lastPosition);
+    setDraggingNodeIds([]);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    onCommitNodePositions(
+      drag.nodeIds.flatMap((nodeId) => {
+        const position = drag.lastPositions[nodeId] ?? drag.startPositions[nodeId];
+        return position ? [{ nodeId, position }] : [];
+      }),
+    );
   }
 
   function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -788,6 +907,18 @@ function FlowEditor({
     }
 
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      const start = clientPointToCanvasPoint(event);
+      selectionRef.current = {
+        pointerId: event.pointerId,
+        additive: event.metaKey || event.ctrlKey,
+        start,
+        current: start,
+      };
+      setSelectionBox(normalizeSelectionBox(start, start));
+      return;
+    }
+
     panRef.current = {
       pointerId: event.pointerId,
       startClientX: event.clientX,
@@ -798,6 +929,19 @@ function FlowEditor({
   }
 
   function handleCanvasPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      handleNodePointerMove(event);
+      return;
+    }
+
+    const selection = selectionRef.current;
+    if (selection && selection.pointerId === event.pointerId) {
+      const current = clientPointToCanvasPoint(event);
+      selection.current = current;
+      setSelectionBox(normalizeSelectionBox(selection.start, current));
+      return;
+    }
+
     const pan = panRef.current;
     if (!pan || pan.pointerId !== event.pointerId) return;
     setViewport((current) => ({
@@ -810,6 +954,26 @@ function FlowEditor({
   }
 
   function finishCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      finishNodeDrag(event);
+      return;
+    }
+
+    const selection = selectionRef.current;
+    if (selection && selection.pointerId === event.pointerId) {
+      const box = normalizeSelectionBox(selection.start, selection.current);
+      const selectedIds =
+        box.width < 4 && box.height < 4 ? [] : getNodeIdsInsideBox(box);
+      const nextSelectedIds = selection.additive
+        ? Array.from(new Set([...selectedNodeIds, ...selectedIds]))
+        : selectedIds;
+      onSelectedNodesChange(nextSelectedIds, nextSelectedIds[0]);
+      selectionRef.current = null;
+      setSelectionBox(null);
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
+
     const pan = panRef.current;
     if (!pan || pan.pointerId !== event.pointerId) return;
     panRef.current = null;
@@ -853,6 +1017,9 @@ function FlowEditor({
           </div>
           <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
             {graph.nodes.length} nodes · {graph.edges.length} edges
+            {selectedNodeIds.length > 1
+              ? ` · ${selectedNodeIds.length} selected`
+              : ""}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1016,14 +1183,24 @@ function FlowEditor({
               );
             })}
           </svg>
+          {selectionBox && (
+            <div
+              className="pointer-events-none absolute rounded-sm border border-emerald-700 bg-emerald-500/10"
+              style={{
+                left: selectionBox.x,
+                top: selectionBox.y,
+                width: selectionBox.width,
+                height: selectionBox.height,
+              }}
+            />
+          )}
           {graph.nodes.map((node) => (
             <FlowNodeCard
               key={node.id}
               node={node}
-              selected={node.id === selectedNode?.id}
-              dragging={node.id === draggingNodeId}
+              selected={selectedNodeIdSet.has(node.id)}
+              dragging={draggingNodeIds.includes(node.id)}
               nodeRun={activeRun?.nodeRuns.find((run) => run.nodeId === node.id)}
-              onSelect={() => onSelectedNodeChange(node.id)}
               onPointerDown={(event) => handleNodePointerDown(event, node)}
               onPointerMove={handleNodePointerMove}
               onPointerUp={finishNodeDrag}
@@ -1034,7 +1211,7 @@ function FlowEditor({
         <FlowMiniMap
           nodes={graph.nodes}
           edges={graph.edges}
-          selectedNodeId={selectedNode?.id ?? ""}
+          selectedNodeIds={selectedNodeIds}
           selectedEdgeId={selectedEdge?.id ?? ""}
           viewport={viewport}
           viewportSize={viewportSize}
@@ -1047,6 +1224,7 @@ function FlowEditor({
         selectedNode={selectedNode}
         selectedEdge={selectedEdge}
         nodes={graph.nodes}
+        selectedNodeCount={selectedNodeIds.length}
         selectedNodeRun={selectedNodeRun}
         activeRun={activeRun}
         runs={runs}
@@ -1075,7 +1253,6 @@ function FlowNodeCard({
   selected,
   dragging,
   nodeRun,
-  onSelect,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -1085,17 +1262,15 @@ function FlowNodeCard({
   selected: boolean;
   dragging: boolean;
   nodeRun?: FlowNodeRun;
-  onSelect: () => void;
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-  onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-  onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-  onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
 }) {
   return (
     <button
       type="button"
       data-flow-node
-      onClick={onSelect}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -1138,7 +1313,7 @@ function FlowNodeCard({
 function FlowMiniMap({
   nodes,
   edges,
-  selectedNodeId,
+  selectedNodeIds,
   selectedEdgeId,
   viewport,
   viewportSize,
@@ -1146,7 +1321,7 @@ function FlowMiniMap({
 }: {
   nodes: FlowNode[];
   edges: FlowEdge[];
-  selectedNodeId: string;
+  selectedNodeIds: string[];
   selectedEdgeId: string;
   viewport: { pan: { x: number; y: number }; scale: number };
   viewportSize: { width: number; height: number };
@@ -1156,6 +1331,10 @@ function FlowMiniMap({
   }) => void;
 }) {
   const miniMapRef = useRef<HTMLButtonElement | null>(null);
+  const selectedNodeIdSet = useMemo(
+    () => new Set(selectedNodeIds),
+    [selectedNodeIds],
+  );
   const scaleX = MINIMAP_WIDTH / CANVAS_WIDTH;
   const scaleY = MINIMAP_HEIGHT / CANVAS_HEIGHT;
   const viewportRect = {
@@ -1261,9 +1440,9 @@ function FlowMiniMap({
             width={NODE_WIDTH * scaleX}
             height={NODE_HEIGHT * scaleY}
             rx="1.5"
-            fill={node.id === selectedNodeId ? "#d1fae5" : "#ffffff"}
-            stroke={node.id === selectedNodeId ? "#047857" : "#0f172a"}
-            strokeWidth={node.id === selectedNodeId ? 1.4 : 0.8}
+            fill={selectedNodeIdSet.has(node.id) ? "#d1fae5" : "#ffffff"}
+            stroke={selectedNodeIdSet.has(node.id) ? "#047857" : "#0f172a"}
+            strokeWidth={selectedNodeIdSet.has(node.id) ? 1.4 : 0.8}
           />
         ))}
         <rect
@@ -1284,6 +1463,7 @@ function FlowInspector({
   selectedNode,
   selectedEdge,
   nodes,
+  selectedNodeCount,
   selectedNodeRun,
   activeRun,
   runs,
@@ -1306,6 +1486,7 @@ function FlowInspector({
   selectedNode: FlowNode | undefined;
   selectedEdge: FlowEdge | undefined;
   nodes: FlowNode[];
+  selectedNodeCount: number;
   selectedNodeRun: FlowNodeRun | null;
   activeRun: FlowRunWithNodes | null;
   runs: FlowRun[];
@@ -1435,7 +1616,10 @@ function FlowInspector({
 
         <section className="rounded-md border border-slate-200 p-3">
           <div className="flex items-center justify-between gap-2">
-            <Eyebrow>Node Inspector</Eyebrow>
+            <Eyebrow>
+              Node Inspector
+              {selectedNodeCount > 1 ? ` · ${selectedNodeCount} selected` : ""}
+            </Eyebrow>
             {selectedNode && (
               <button
                 type="button"

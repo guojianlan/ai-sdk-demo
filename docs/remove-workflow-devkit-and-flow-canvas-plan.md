@@ -750,6 +750,12 @@ Completed:
   - added `DELETE /api/flows/[flowId]` as archive semantics backed by `flows.archived_at`;
   - the Flow Details inspector can edit title/description and archive the active flow;
   - archived flows are preserved in SQLite but hidden from `GET /api/flows` and the Flows list.
+- Added richer canvas selection:
+  - nodes now maintain a multi-select state in addition to the primary inspector node;
+  - modifier-clicking nodes adds them to the current selection;
+  - modifier-dragging empty canvas space draws a selection rectangle and selects intersecting nodes;
+  - dragging any selected node moves the selected group together;
+  - group drags persist each moved node through the existing node `PATCH` route.
 
 Verified:
 
@@ -781,8 +787,11 @@ Verified:
 - Browser smoke on `127.0.0.1:3002`: opened Flows, loaded `Minimap QA flow`, verified the minimap rendered nodes/edges/current viewport, clicked the minimap near a far-away node, verified the main canvas transform updated and the far node became visible, and captured `/tmp/ai-sdk-demo-flow-minimap-ui.png`.
 - API smoke: created a flow, patched title/description, archived it through `DELETE /api/flows/[flowId]`, and verified it no longer appeared in `GET /api/flows`.
 - Playwright smoke: edited title/description in Flow Details, verified `GET /api/flows/[flowId]` returned the saved metadata, clicked Archive, verified the flow disappeared from the UI and `GET /api/flows`, and captured `/tmp/ai-sdk-demo-flow-details-ui.png`.
+- `npx tsc --noEmit` after adding canvas multi-select and group dragging.
+- `npm run lint` after adding canvas multi-select and group dragging.
+- Playwright smoke: opened Flows on `127.0.0.1:3002`, selected two nodes with a selection rectangle, dragged the selected group, verified both nodes persisted their new positions through `GET /api/flows/[flowId]`, archived the temporary flow, and captured `/tmp/ai-sdk-demo-flow-multiselect-ui.png`.
 
 Remaining:
 
-- Add richer infinite-canvas interactions such as selection boxes, multi-select, and better edge routing.
+- Add richer infinite-canvas interactions such as better edge routing.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.
