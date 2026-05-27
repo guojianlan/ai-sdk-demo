@@ -761,6 +761,12 @@ Completed:
   - double-clicking a node on the canvas opens the same detail view;
   - the detail view shows the current active run state, node config, input, output, trace, error, and transcript;
   - hidden reasoning remains excluded because only the existing persisted trace and safe transcript are displayed.
+- Added direct canvas edge creation and clearer routing:
+  - nodes now expose a right-side output port and left-side input anchor;
+  - dragging from an output port to another node creates an edge through the existing `POST /api/flows/[flowId]/edges` route;
+  - while dragging, the canvas shows a dashed preview connection and highlights the current target node;
+  - persisted edges now render as curved paths with arrowheads instead of plain straight lines;
+  - the existing toolbar-based source/target connector remains available for condition JSON entry.
 
 Verified:
 
@@ -798,8 +804,10 @@ Verified:
 - `npx tsc --noEmit` after adding node run detail inspection.
 - `npm run lint` after adding node run detail inspection.
 - Playwright smoke: created and ran a default `Start -> End` flow, opened Flows on `127.0.0.1:3002`, double-clicked the Start node, verified the detail view showed run status and persisted input/output content, closed the detail view, archived the temporary flow, and captured `/tmp/ai-sdk-demo-flow-node-detail-ui.png`.
+- `npx tsc --noEmit` after adding port drag edge creation and curved edge paths.
+- `npm run lint` after adding port drag edge creation and curved edge paths.
+- Playwright smoke: created a flow plus `Port Target`, opened Flows on `127.0.0.1:3002`, dragged from the Start output port onto the target node, verified `GET /api/flows/[flowId]` persisted the new `Start -> Port Target` edge, archived the temporary flow, and captured `/tmp/ai-sdk-demo-flow-port-connect-ui.png`.
 
 Remaining:
 
-- Add richer infinite-canvas interactions such as better edge routing.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.

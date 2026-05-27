@@ -61,6 +61,8 @@ type NodePositionPatch = {
   position: { x: number; y: number };
 };
 
+type CanvasPoint = { x: number; y: number };
+
 export function FlowWorkspace({
   workspaces,
   workspacesLoading,
@@ -266,6 +268,31 @@ export function FlowWorkspace({
         condition: edgeConditionDraft.trim()
           ? parseConfigJson(edgeConditionDraft, "Edge condition")
           : null,
+      });
+      const nextGraph = await fetchFlowGraph(graph.flow.id);
+      setGraph(nextGraph);
+      setEdgeSource(edge.sourceNodeId);
+      setEdgeTarget(edge.targetNodeId);
+      setSelectedNodeId("");
+      setSelectedNodeIds([]);
+      setSelectedEdgeId(edge.id);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "连接节点失败");
+    }
+  }
+
+  async function handleConnectNodePair(params: {
+    sourceNodeId: string;
+    targetNodeId: string;
+  }) {
+    if (!graph) return;
+    setError("");
+    try {
+      const edge = await createFlowEdgeOnApi({
+        flowId: graph.flow.id,
+        sourceNodeId: params.sourceNodeId,
+        targetNodeId: params.targetNodeId,
+        condition: null,
       });
       const nextGraph = await fetchFlowGraph(graph.flow.id);
       setGraph(nextGraph);
@@ -598,6 +625,7 @@ export function FlowWorkspace({
             onInputDraftChange={setInputDraft}
             onAddNode={() => void handleAddNode()}
             onConnectNodes={() => void handleConnectNodes()}
+            onConnectNodePair={(params) => void handleConnectNodePair(params)}
             onRunFlow={() => void handleRunFlow()}
             onSelectRun={(runId) => void handleSelectRun(runId)}
             onSaveFlow={(params) => void handleSaveFlow(params)}
@@ -646,6 +674,7 @@ function FlowEditor({
   onInputDraftChange,
   onAddNode,
   onConnectNodes,
+  onConnectNodePair,
   onRunFlow,
   onSelectRun,
   onSaveFlow,
@@ -681,6 +710,10 @@ function FlowEditor({
   onInputDraftChange: (value: string) => void;
   onAddNode: () => void;
   onConnectNodes: () => void;
+  onConnectNodePair: (params: {
+    sourceNodeId: string;
+    targetNodeId: string;
+  }) => void;
   onRunFlow: () => void;
   onSelectRun: (runId: string) => void;
   onSaveFlow: (params: { title: string; description: string | null }) => void;
@@ -717,6 +750,13 @@ function FlowEditor({
     start: { x: number; y: number };
     current: { x: number; y: number };
   } | null>(null);
+  const connectionRef = useRef<{
+    pointerId: number;
+    sourceNodeId: string;
+    start: CanvasPoint;
+    current: CanvasPoint;
+    targetNodeId: string;
+  } | null>(null);
   const [viewport, setViewport] = useState({
     pan: { x: 0, y: 0 },
     scale: 1,
@@ -725,6 +765,12 @@ function FlowEditor({
   const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([]);
   const [panning, setPanning] = useState(false);
   const [detailNodeId, setDetailNodeId] = useState("");
+  const [connectionDraft, setConnectionDraft] = useState<{
+    sourceNodeId: string;
+    start: CanvasPoint;
+    current: CanvasPoint;
+    targetNodeId: string;
+  } | null>(null);
   const [selectionBox, setSelectionBox] = useState<{
     x: number;
     y: number;
@@ -766,6 +812,32 @@ function FlowEditor({
       x: (event.clientX - rect.left - viewport.pan.x) / viewport.scale,
       y: (event.clientY - rect.top - viewport.pan.y) / viewport.scale,
     };
+  }
+
+  function getNodeInputPoint(node: FlowNode): CanvasPoint {
+    return {
+      x: node.position.x,
+      y: node.position.y + NODE_HEIGHT / 2,
+    };
+  }
+
+  function getNodeOutputPoint(node: FlowNode): CanvasPoint {
+    return {
+      x: node.position.x + NODE_WIDTH,
+      y: node.position.y + NODE_HEIGHT / 2,
+    };
+  }
+
+  function getNodeAtCanvasPoint(point: CanvasPoint, excludedNodeId: string) {
+    return graph.nodes.find((node) => {
+      if (node.id === excludedNodeId) return false;
+      return (
+        point.x >= node.position.x &&
+        point.x <= node.position.x + NODE_WIDTH &&
+        point.y >= node.position.y &&
+        point.y <= node.position.y + NODE_HEIGHT
+      );
+    });
   }
 
   function normalizeSelectionBox(
@@ -832,7 +904,7 @@ function FlowEditor({
   }
 
   function handleNodePointerDown(
-    event: ReactPointerEvent<HTMLButtonElement>,
+    event: ReactPointerEvent<HTMLElement>,
     node: FlowNode,
   ) {
     if (event.button !== 0) return;
@@ -859,6 +931,70 @@ function FlowEditor({
       lastPositions: startPositions,
     };
     setDraggingNodeIds(nextSelectedNodeIds);
+  }
+
+  function handleConnectionPointerDown(
+    event: ReactPointerEvent<HTMLElement>,
+    node: FlowNode,
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const start = getNodeOutputPoint(node);
+    const current = clientPointToCanvasPoint(event);
+    const draft = {
+      pointerId: event.pointerId,
+      sourceNodeId: node.id,
+      start,
+      current,
+      targetNodeId: "",
+    };
+    connectionRef.current = draft;
+    setConnectionDraft({
+      sourceNodeId: draft.sourceNodeId,
+      start,
+      current,
+      targetNodeId: "",
+    });
+  }
+
+  function handleConnectionPointerMove(event: ReactPointerEvent<HTMLElement>) {
+    const connection = connectionRef.current;
+    if (!connection || connection.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current = clientPointToCanvasPoint(event);
+    const targetNode = getNodeAtCanvasPoint(current, connection.sourceNodeId);
+    const next = {
+      ...connection,
+      current,
+      targetNodeId: targetNode?.id ?? "",
+    };
+    connectionRef.current = next;
+    setConnectionDraft({
+      sourceNodeId: next.sourceNodeId,
+      start: next.start,
+      current: next.current,
+      targetNodeId: next.targetNodeId,
+    });
+  }
+
+  function finishConnectionDrag(event: ReactPointerEvent<HTMLElement>) {
+    const connection = connectionRef.current;
+    if (!connection || connection.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    connectionRef.current = null;
+    setConnectionDraft(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!connection.targetNodeId) return;
+    onConnectNodePair({
+      sourceNodeId: connection.sourceNodeId,
+      targetNodeId: connection.targetNodeId,
+    });
   }
 
   function handleNodePointerMove(event: ReactPointerEvent<HTMLElement>) {
@@ -908,7 +1044,7 @@ function FlowEditor({
     if (
       target instanceof Element &&
       target.closest(
-        "[data-flow-node],[data-flow-edge],[data-flow-minimap],button,input,select,textarea",
+        "[data-flow-node],[data-flow-edge],[data-flow-minimap],[data-flow-port],button,input,select,textarea",
       )
     ) {
       return;
@@ -937,6 +1073,11 @@ function FlowEditor({
   }
 
   function handleCanvasPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (connectionRef.current?.pointerId === event.pointerId) {
+      handleConnectionPointerMove(event);
+      return;
+    }
+
     if (dragRef.current?.pointerId === event.pointerId) {
       handleNodePointerMove(event);
       return;
@@ -962,6 +1103,11 @@ function FlowEditor({
   }
 
   function finishCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (connectionRef.current?.pointerId === event.pointerId) {
+      finishConnectionDrag(event);
+      return;
+    }
+
     if (dragRef.current?.pointerId === event.pointerId) {
       finishNodeDrag(event);
       return;
@@ -1155,11 +1301,39 @@ function FlowEditor({
           }}
         >
           <svg className="pointer-events-none absolute inset-0 h-full w-full">
+            <defs>
+              <marker
+                id="flow-edge-arrow"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f172a" />
+              </marker>
+              <marker
+                id="flow-edge-arrow-selected"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#047857" />
+              </marker>
+            </defs>
             {graph.edges.map((edge) => {
               const source = graph.nodes.find((node) => node.id === edge.sourceNodeId);
               const target = graph.nodes.find((node) => node.id === edge.targetNodeId);
               if (!source || !target) return null;
               const selected = edge.id === selectedEdge?.id;
+              const edgePath = buildEdgePath(
+                getNodeOutputPoint(source),
+                getNodeInputPoint(target),
+              );
               return (
                 <g
                   key={edge.id}
@@ -1170,26 +1344,36 @@ function FlowEditor({
                     onSelectedEdgeChange(edge.id);
                   }}
                 >
-                  <line
-                    x1={source.position.x + 96}
-                    y1={source.position.y + 32}
-                    x2={target.position.x}
-                    y2={target.position.y + 32}
+                  <path
+                    d={edgePath}
                     stroke="transparent"
                     strokeWidth="16"
+                    fill="none"
                   />
-                  <line
-                    x1={source.position.x + 96}
-                    y1={source.position.y + 32}
-                    x2={target.position.x}
-                    y2={target.position.y + 32}
+                  <path
+                    d={edgePath}
                     stroke={selected ? "#047857" : "#0f172a"}
                     strokeWidth={selected ? "3" : "2"}
                     strokeDasharray={edge.condition ? "4 4" : undefined}
+                    markerEnd={
+                      selected
+                        ? "url(#flow-edge-arrow-selected)"
+                        : "url(#flow-edge-arrow)"
+                    }
+                    fill="none"
                   />
                 </g>
               );
             })}
+            {connectionDraft && (
+              <path
+                d={buildEdgePath(connectionDraft.start, connectionDraft.current)}
+                stroke={connectionDraft.targetNodeId ? "#047857" : "#64748b"}
+                strokeWidth="2.5"
+                strokeDasharray="6 5"
+                fill="none"
+              />
+            )}
           </svg>
           {selectionBox && (
             <div
@@ -1208,12 +1392,18 @@ function FlowEditor({
               node={node}
               selected={selectedNodeIdSet.has(node.id)}
               dragging={draggingNodeIds.includes(node.id)}
+              connectionTarget={connectionDraft?.targetNodeId === node.id}
               nodeRun={activeRun?.nodeRuns.find((run) => run.nodeId === node.id)}
               onOpenDetail={() => setDetailNodeId(node.id)}
               onPointerDown={(event) => handleNodePointerDown(event, node)}
               onPointerMove={handleNodePointerMove}
               onPointerUp={finishNodeDrag}
               onPointerCancel={finishNodeDrag}
+              onStartConnection={(event) =>
+                handleConnectionPointerDown(event, node)
+              }
+              onMoveConnection={handleConnectionPointerMove}
+              onFinishConnection={finishConnectionDrag}
             />
           ))}
         </div>
@@ -1270,26 +1460,35 @@ function FlowNodeCard({
   node,
   selected,
   dragging,
+  connectionTarget,
   nodeRun,
   onOpenDetail,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onStartConnection,
+  onMoveConnection,
+  onFinishConnection,
 }: {
   node: FlowNode;
   selected: boolean;
   dragging: boolean;
+  connectionTarget: boolean;
   nodeRun?: FlowNodeRun;
   onOpenDetail: () => void;
-  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
+  onStartConnection: (event: ReactPointerEvent<HTMLElement>) => void;
+  onMoveConnection: (event: ReactPointerEvent<HTMLElement>) => void;
+  onFinishConnection: (event: ReactPointerEvent<HTMLElement>) => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       data-flow-node
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -1299,12 +1498,25 @@ function FlowNodeCard({
       className={[
         "absolute w-48 touch-none rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
         dragging ? "cursor-grabbing shadow-md" : "cursor-grab",
-        selected
+        connectionTarget
+          ? "border-emerald-700 ring-4 ring-emerald-100"
+          : selected
           ? "border-emerald-700 ring-2 ring-emerald-100"
           : "border-slate-900",
       ].join(" ")}
       style={{ left: node.position.x, top: node.position.y }}
     >
+      <div className="pointer-events-none absolute left-[-5px] top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border border-slate-900 bg-white" />
+      <button
+        type="button"
+        data-flow-port="output"
+        aria-label={`Connect from ${node.title}`}
+        onPointerDown={onStartConnection}
+        onPointerMove={onMoveConnection}
+        onPointerUp={onFinishConnection}
+        onPointerCancel={onFinishConnection}
+        className="absolute right-[-7px] top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-emerald-700 bg-white shadow-sm hover:bg-emerald-50"
+      />
       <div className="flex items-center justify-between gap-2">
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
           {node.type}
@@ -1327,7 +1539,7 @@ function FlowNodeCard({
       <div className="mt-1 truncate text-sm font-semibold text-slate-900">
         {node.title}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -2305,6 +2517,17 @@ function parseJsonDraft(value: string): unknown {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function buildEdgePath(source: CanvasPoint, target: CanvasPoint): string {
+  const distance = Math.abs(target.x - source.x);
+  const curve = clamp(distance * 0.5, 80, 220);
+  return [
+    `M ${source.x} ${source.y}`,
+    `C ${source.x + curve} ${source.y}`,
+    `${target.x - curve} ${target.y}`,
+    `${target.x} ${target.y}`,
+  ].join(" ");
 }
 
 function messageToText(message: UIMessage): string {
