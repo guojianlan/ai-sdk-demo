@@ -121,6 +121,7 @@ export async function createFlowNodeOnApi(params: {
   type: FlowNodeType;
   title?: string;
   position?: { x: number; y: number };
+  config?: unknown;
 }): Promise<FlowNode> {
   const response = await fetch(
     `/api/flows/${encodeURIComponent(params.flowId)}/nodes`,
@@ -131,6 +132,35 @@ export async function createFlowNodeOnApi(params: {
         type: params.type,
         title: params.title,
         position: params.position,
+        config: params.config,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const data = (await response.json()) as { node: FlowNode };
+  return data.node;
+}
+
+export async function updateFlowNodeOnApi(params: {
+  flowId: string;
+  nodeId: string;
+  title?: string;
+  position?: { x: number; y: number };
+  config?: unknown;
+}): Promise<FlowNode> {
+  const response = await fetch(
+    `/api/flows/${encodeURIComponent(params.flowId)}/nodes/${encodeURIComponent(
+      params.nodeId,
+    )}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: params.title,
+        position: params.position,
+        config: params.config,
       }),
     },
   );

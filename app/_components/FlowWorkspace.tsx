@@ -11,6 +11,7 @@ import {
   fetchFlowGraph,
   fetchFlows,
   runFlowOnApi,
+  updateFlowNodeOnApi,
   type FlowDefinition,
   type FlowGraph,
   type FlowNode,
@@ -50,6 +51,7 @@ export function FlowWorkspace({
   const [activeRun, setActiveRun] = useState<FlowRunWithNodes | null>(null);
   const [inputDraft, setInputDraft] = useState("{\n  \"topic\": \"hello\"\n}");
   const [running, setRunning] = useState(false);
+  const [savingNode, setSavingNode] = useState(false);
   const [error, setError] = useState("");
 
   const effectiveWorkspaceRoot = workspaceRoot || workspaces[0]?.root || "";
@@ -230,6 +232,33 @@ export function FlowWorkspace({
     }
   }
 
+  async function handleSaveNode(params: {
+    nodeId: string;
+    title: string;
+    config: unknown;
+  }) {
+    if (!graph) return;
+    setError("");
+    setSavingNode(true);
+    try {
+      const node = await updateFlowNodeOnApi({
+        flowId: graph.flow.id,
+        nodeId: params.nodeId,
+        title: params.title,
+        config: params.config,
+      });
+      setGraph({
+        ...graph,
+        nodes: graph.nodes.map((item) => (item.id === node.id ? node : item)),
+      });
+      setSelectedNodeId(node.id);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "保存节点失败");
+    } finally {
+      setSavingNode(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden px-5 py-6 sm:px-8 lg:px-10">
       <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
@@ -325,11 +354,13 @@ export function FlowWorkspace({
             activeRun={activeRun}
             inputDraft={inputDraft}
             running={running}
+            savingNode={savingNode}
             onInputDraftChange={setInputDraft}
             onAddNode={() => void handleAddNode()}
             onConnectNodes={() => void handleConnectNodes()}
             onRunFlow={() => void handleRunFlow()}
             onSelectRun={(runId) => void handleSelectRun(runId)}
+            onSaveNode={(params) => void handleSaveNode(params)}
           />
         ) : (
           <div className="flex min-h-0 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
@@ -355,11 +386,13 @@ function FlowEditor({
   activeRun,
   inputDraft,
   running,
+  savingNode,
   onInputDraftChange,
   onAddNode,
   onConnectNodes,
   onRunFlow,
   onSelectRun,
+  onSaveNode,
 }: {
   graph: FlowGraph;
   nodeType: FlowNodeType;
@@ -374,11 +407,17 @@ function FlowEditor({
   activeRun: FlowRunWithNodes | null;
   inputDraft: string;
   running: boolean;
+  savingNode: boolean;
   onInputDraftChange: (value: string) => void;
   onAddNode: () => void;
   onConnectNodes: () => void;
   onRunFlow: () => void;
   onSelectRun: (runId: string) => void;
+  onSaveNode: (params: {
+    nodeId: string;
+    title: string;
+    config: unknown;
+  }) => void;
 }) {
   const selectedNode =
     graph.nodes.find((node) => node.id === selectedNodeId) ?? graph.nodes[0];
@@ -506,9 +545,11 @@ function FlowEditor({
         runs={runs}
         inputDraft={inputDraft}
         running={running}
+        savingNode={savingNode}
         onInputDraftChange={onInputDraftChange}
         onRunFlow={onRunFlow}
         onSelectRun={onSelectRun}
+        onSaveNode={onSaveNode}
       />
     </div>
   );
@@ -568,9 +609,11 @@ function FlowInspector({
   runs,
   inputDraft,
   running,
+  savingNode,
   onInputDraftChange,
   onRunFlow,
   onSelectRun,
+  onSaveNode,
 }: {
   selectedNode: FlowNode | undefined;
   selectedNodeRun: FlowNodeRun | null;
@@ -578,9 +621,15 @@ function FlowInspector({
   runs: FlowRun[];
   inputDraft: string;
   running: boolean;
+  savingNode: boolean;
   onInputDraftChange: (value: string) => void;
   onRunFlow: () => void;
   onSelectRun: (runId: string) => void;
+  onSaveNode: (params: {
+    nodeId: string;
+    title: string;
+    config: unknown;
+  }) => void;
 }) {
   return (
     <aside className="min-h-0 overflow-y-auto border-l border-slate-200 pl-4">
@@ -644,13 +693,16 @@ function FlowInspector({
           {selectedNode ? (
             <div className="mt-3 space-y-3">
               <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  {selectedNode.title}
-                </div>
                 <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
                   {selectedNode.type}
                 </div>
               </div>
+              <NodeConfigForm
+                key={selectedNode.id}
+                node={selectedNode}
+                savingNode={savingNode}
+                onSaveNode={onSaveNode}
+              />
               <JsonBlock label="Config" value={selectedNode.config} />
               <JsonBlock label="Last Input" value={selectedNodeRun?.input ?? null} />
               <JsonBlock
@@ -673,6 +725,150 @@ function FlowInspector({
   );
 }
 
+function NodeConfigForm({
+  node,
+  savingNode,
+  onSaveNode,
+}: {
+  node: FlowNode;
+  savingNode: boolean;
+  onSaveNode: (params: {
+    nodeId: string;
+    title: string;
+    config: unknown;
+  }) => void;
+}) {
+  const promptConfig = normalizePromptConfigForForm(node.config);
+  const [titleDraft, setTitleDraft] = useState(node.title);
+  const [promptDraft, setPromptDraft] = useState(promptConfig.prompt);
+  const [schemaDraft, setSchemaDraft] = useState(
+    JSON.stringify(promptConfig.outputSchema, null, 2),
+  );
+  const [retryDraft, setRetryDraft] = useState(
+    String(promptConfig.retry.maxAttempts),
+  );
+  const [timeoutDraft, setTimeoutDraft] = useState(
+    String(promptConfig.timeoutMs),
+  );
+  const [configDraft, setConfigDraft] = useState(
+    JSON.stringify(node.config ?? {}, null, 2),
+  );
+  const [configError, setConfigError] = useState("");
+
+  function handleSaveSelectedNode() {
+    setConfigError("");
+    try {
+      const config =
+        node.type === "prompt"
+          ? buildPromptConfig({
+              existing: node.config,
+              prompt: promptDraft,
+              schemaText: schemaDraft,
+              retryText: retryDraft,
+              timeoutText: timeoutDraft,
+            })
+          : parseConfigJson(configDraft, "Config");
+      onSaveNode({
+        nodeId: node.id,
+        title: titleDraft,
+        config,
+      });
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : "节点配置不合法");
+    }
+  }
+
+  return (
+    <>
+      <label className="block">
+        <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+          Title
+        </span>
+        <input
+          value={titleDraft}
+          onChange={(event) => setTitleDraft(event.target.value)}
+          className="h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-900"
+        />
+      </label>
+      {node.type === "prompt" ? (
+        <>
+          <label className="block">
+            <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+              Prompt
+            </span>
+            <textarea
+              value={promptDraft}
+              onChange={(event) => setPromptDraft(event.target.value)}
+              spellCheck={false}
+              className="h-28 w-full resize-none rounded-md border border-slate-300 p-2 text-sm leading-5 outline-none focus:border-slate-900"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+              Output Schema
+            </span>
+            <textarea
+              value={schemaDraft}
+              onChange={(event) => setSchemaDraft(event.target.value)}
+              spellCheck={false}
+              className="h-32 w-full resize-none rounded-md border border-slate-300 bg-white p-2 font-mono text-xs leading-5 outline-none focus:border-slate-900"
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                Retry
+              </span>
+              <input
+                value={retryDraft}
+                onChange={(event) => setRetryDraft(event.target.value)}
+                inputMode="numeric"
+                className="h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-900"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                Timeout ms
+              </span>
+              <input
+                value={timeoutDraft}
+                onChange={(event) => setTimeoutDraft(event.target.value)}
+                inputMode="numeric"
+                className="h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-900"
+              />
+            </label>
+          </div>
+        </>
+      ) : (
+        <label className="block">
+          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+            Config
+          </span>
+          <textarea
+            value={configDraft}
+            onChange={(event) => setConfigDraft(event.target.value)}
+            spellCheck={false}
+            className="h-32 w-full resize-none rounded-md border border-slate-300 bg-white p-2 font-mono text-xs leading-5 outline-none focus:border-slate-900"
+          />
+        </label>
+      )}
+      {configError && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+          {configError}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={handleSaveSelectedNode}
+        disabled={savingNode}
+        className="h-9 w-full rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
+      >
+        {savingNode ? "Saving" : "Save Node"}
+      </button>
+    </>
+  );
+}
+
 function JsonBlock({ label, value }: { label: string; value: unknown }) {
   return (
     <div>
@@ -692,4 +888,80 @@ function parseJsonDraft(value: string): unknown {
   } catch {
     throw new Error("Run input 必须是合法 JSON。");
   }
+}
+
+function parseConfigJson(value: string, label: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`${label} 必须是合法 JSON。`);
+  }
+}
+
+function normalizePromptConfigForForm(config: unknown): {
+  prompt: string;
+  outputSchema: unknown;
+  retry: { maxAttempts: number };
+  timeoutMs: number;
+} {
+  const maybe = isRecord(config) ? config : {};
+  const retry = isRecord(maybe.retry) ? maybe.retry : {};
+  return {
+    prompt:
+      typeof maybe.prompt === "string"
+        ? maybe.prompt
+        : "Use the input JSON and return the next JSON object.",
+    outputSchema:
+      isRecord(maybe.outputSchema) && Object.keys(maybe.outputSchema).length > 0
+        ? maybe.outputSchema
+        : {
+            type: "object",
+            additionalProperties: true,
+          },
+    retry: {
+      maxAttempts: normalizeInteger(retry.maxAttempts, 3, 1, 5),
+    },
+    timeoutMs: normalizeInteger(maybe.timeoutMs, 60_000, 1_000, 300_000),
+  };
+}
+
+function buildPromptConfig(params: {
+  existing: unknown;
+  prompt: string;
+  schemaText: string;
+  retryText: string;
+  timeoutText: string;
+}): unknown {
+  const existing = isRecord(params.existing) ? params.existing : {};
+  const outputSchema = parseConfigJson(
+    params.schemaText.trim() || "{}",
+    "Output schema",
+  );
+  if (!isRecord(outputSchema)) {
+    throw new Error("Output schema 必须是 JSON object。");
+  }
+  return {
+    ...existing,
+    prompt: params.prompt.trim() || "Use the input JSON and return the next JSON object.",
+    outputSchema,
+    retry: {
+      maxAttempts: normalizeInteger(Number(params.retryText), 3, 1, 5),
+    },
+    timeoutMs: normalizeInteger(Number(params.timeoutText), 60_000, 1_000, 300_000),
+  };
+}
+
+function normalizeInteger(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(numberValue)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

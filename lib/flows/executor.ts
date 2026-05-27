@@ -1,4 +1,4 @@
-import { generateText, Output } from "ai";
+import { generateText, jsonSchema, Output } from "ai";
 
 import { instrumentModel } from "@/lib/devtools";
 import { env } from "@/lib/env";
@@ -19,11 +19,20 @@ const MAX_EXECUTED_NODES = 100;
 
 type PromptNodeConfig = {
   prompt?: unknown;
+  outputSchema?: unknown;
   retry?: unknown;
+  timeoutMs?: unknown;
 };
 
 type RetryConfig = {
   maxAttempts: number;
+};
+
+type NormalizedPromptConfig = {
+  prompt: string;
+  outputSchema: Record<string, unknown> | null;
+  retry: RetryConfig;
+  timeoutMs: number | null;
 };
 
 type NodeExecutionResult = {
@@ -202,22 +211,32 @@ async function executePromptNode(
   input: unknown,
 ): Promise<NodeExecutionResult> {
   const config = normalizePromptConfig(node.config);
-  const userPrompt = [
-    config.prompt,
-    "",
-    "Input JSON:",
-    stableStringify(input),
-    "",
-    "Return only valid JSON.",
-  ].join("\n");
+  const userPrompt = buildPromptText({
+    prompt: config.prompt,
+    input,
+    outputSchema: config.outputSchema,
+  });
 
   const startedAt = Date.now();
-  const result = await generateText({
-    model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
-    output: Output.json(),
-    prompt: userPrompt,
-    maxRetries: Math.max(0, config.retry.maxAttempts - 1),
-  });
+  const result = config.outputSchema
+    ? await generateText({
+        model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
+        output: Output.object({
+          schema: jsonSchema<Record<string, unknown>>(
+            config.outputSchema as Parameters<typeof jsonSchema>[0],
+          ),
+        }),
+        prompt: userPrompt,
+        maxRetries: Math.max(0, config.retry.maxAttempts - 1),
+        abortSignal: createTimeoutSignal(config.timeoutMs),
+      })
+    : await generateText({
+        model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
+        output: Output.json(),
+        prompt: userPrompt,
+        maxRetries: Math.max(0, config.retry.maxAttempts - 1),
+        abortSignal: createTimeoutSignal(config.timeoutMs),
+      });
 
   return {
     output: result.output,
@@ -225,6 +244,7 @@ async function executePromptNode(
       kind: "prompt",
       model: env.gateway.modelId,
       prompt: config.prompt,
+      outputSchema: config.outputSchema,
       input,
       text: result.text,
       output: result.output,
@@ -232,6 +252,7 @@ async function executePromptNode(
       usage: result.totalUsage,
       durationMs: Date.now() - startedAt,
       attemptsConfigured: config.retry.maxAttempts,
+      timeoutMs: config.timeoutMs,
       messages: [
         { role: "user", content: userPrompt },
         { role: "assistant", content: result.text },
@@ -256,6 +277,33 @@ function buildNodeInput(
   if (upstream.length === 0) return {};
   if (upstream.length === 1) return upstream[0]?.output ?? {};
   return { inputs: upstream };
+}
+
+function buildPromptText(params: {
+  prompt: string;
+  input: unknown;
+  outputSchema: Record<string, unknown> | null;
+}): string {
+  const parts = [
+    params.prompt,
+    "",
+    "Input JSON:",
+    stableStringify(params.input),
+    "",
+  ];
+
+  if (params.outputSchema) {
+    parts.push(
+      "Output JSON schema:",
+      stableStringify(params.outputSchema),
+      "",
+      "Return only valid JSON that matches the output schema.",
+    );
+  } else {
+    parts.push("Return only valid JSON.");
+  }
+
+  return parts.join("\n");
 }
 
 function isNodeReady(params: {
@@ -316,17 +364,16 @@ function getConfiguredStartInput(node: FlowNode): unknown {
   return config.input ?? {};
 }
 
-function normalizePromptConfig(config: unknown): {
-  prompt: string;
-  retry: RetryConfig;
-} {
+function normalizePromptConfig(config: unknown): NormalizedPromptConfig {
   const maybe = isRecord(config) ? (config as PromptNodeConfig) : {};
   return {
     prompt:
       typeof maybe.prompt === "string" && maybe.prompt.trim()
         ? maybe.prompt.trim()
         : "Use the input JSON and return the next JSON object.",
+    outputSchema: normalizeOutputSchema(maybe.outputSchema),
     retry: normalizeRetryConfig(maybe.retry),
+    timeoutMs: normalizeTimeoutMs(maybe.timeoutMs),
   };
 }
 
@@ -343,6 +390,28 @@ function normalizeRetryConfig(value: unknown): RetryConfig {
     return { maxAttempts: Math.min(5, Math.floor(maybe.maxAttempts)) };
   }
   return { maxAttempts: 3 };
+}
+
+function normalizeOutputSchema(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  if (Object.keys(value).length === 0) return null;
+  return value;
+}
+
+function normalizeTimeoutMs(value: unknown): number | null {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 1_000
+  ) {
+    return Math.min(300_000, Math.floor(value));
+  }
+  return 60_000;
+}
+
+function createTimeoutSignal(timeoutMs: number | null): AbortSignal | undefined {
+  if (!timeoutMs) return undefined;
+  return AbortSignal.timeout(timeoutMs);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

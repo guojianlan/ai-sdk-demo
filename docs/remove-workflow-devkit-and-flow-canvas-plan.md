@@ -696,6 +696,15 @@ Completed:
   - added run history;
   - added node status badges;
   - clicking a node opens an inspector with config, last input/output, trace, and error.
+- Added editable prompt node configuration:
+  - added `PATCH /api/flows/[flowId]/nodes/[nodeId]`;
+  - added persistence support for updating node title, position, and config;
+  - inspector can edit node title, prompt template, output JSON schema, retry attempts, and timeout;
+  - non-prompt nodes can edit raw config JSON.
+- Added prompt output schema validation:
+  - prompt nodes with `outputSchema` now use AI SDK `generateText()` with `Output.object({ schema: jsonSchema(...) })`;
+  - schema is also included in the rendered prompt for OpenAI-compatible providers that do not fully enforce response format;
+  - schema, timeout, retry count, model, usage, prompt, and safe visible messages are persisted in node trace.
 
 Verified:
 
@@ -712,11 +721,12 @@ Verified:
 - API smoke: created a flow and ran Start -> End; run succeeded with persisted node runs
 - API smoke: created Start -> Prompt -> End, prompt node called AI SDK, run succeeded with JSON output
 - Playwright smoke: opened Flows tab, created a flow, ran it from the UI, saw node inspector/run status, and captured `/tmp/ai-sdk-demo-flow-run-ui.png`
+- API smoke: patched a prompt node title/config, ran Start -> Prompt -> End with an output schema, and received schema-valid JSON output
+- Playwright smoke: edited a prompt node title/prompt/schema in the inspector, saved it through the UI, and verified the persisted config through `GET /api/flows/[flowId]`; screenshot captured at `/tmp/ai-sdk-demo-flow-config-ui.png`
 
 Remaining:
 
-- Add node inspector editing for prompt template, input mapping, output schema, timeout, and retry policy.
-- Add schema validation with `Output.object({ schema: jsonSchema(...) })` for prompt node output schemas.
+- Add input mapping UI and execution semantics.
 - Add full chat-thread linkage for prompt node runs; current implementation stores a safe trace, not a reusable chat transcript.
 - Add transform/condition execution semantics beyond pass-through.
 - Add node/edge deletion, node drag/pan/zoom, and richer infinite-canvas interactions.

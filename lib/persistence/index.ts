@@ -58,6 +58,7 @@ export {
   createFlow,
   getFlowWithGraph,
   createFlowNode,
+  updateFlowNode,
   createFlowEdge,
   createFlowRun,
   updateFlowRun,

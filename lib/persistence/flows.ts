@@ -325,6 +325,45 @@ export function createFlowNode(opts: {
   return getFlowNode(id);
 }
 
+export function updateFlowNode(opts: {
+  flowId: string;
+  nodeId: string;
+  title?: string;
+  position?: { x: number; y: number };
+  config?: unknown;
+}): FlowNode {
+  assertFlowExists(opts.flowId);
+  const current = getFlowNode(opts.nodeId);
+  if (current.flowId !== opts.flowId) {
+    throw new Error("Flow node not found.");
+  }
+
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `UPDATE flow_nodes
+       SET title = ?,
+           position_x = ?,
+           position_y = ?,
+           config_json = ?,
+           updated_at = ?
+       WHERE id = ? AND flow_id = ?`,
+    )
+    .run(
+      opts.title === undefined
+        ? current.title
+        : opts.title.trim() || defaultNodeTitle(current.type),
+      opts.position?.x ?? current.position.x,
+      opts.position?.y ?? current.position.y,
+      JSON.stringify(opts.config === undefined ? current.config : opts.config),
+      now,
+      opts.nodeId,
+      opts.flowId,
+    );
+  touchFlow(opts.flowId, now);
+  return getFlowNode(opts.nodeId);
+}
+
 export function createFlowEdge(opts: {
   flowId: string;
   sourceNodeId: string;
@@ -720,7 +759,14 @@ function defaultNodeConfig(type: FlowNodeType): unknown {
   if (type === "prompt") {
     return {
       prompt: "Use the input JSON and return the next JSON object.",
-      outputSchema: {},
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+      },
+      retry: {
+        maxAttempts: 3,
+      },
+      timeoutMs: 60_000,
     };
   }
   if (type === "condition") {
