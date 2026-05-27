@@ -705,6 +705,17 @@ Completed:
   - prompt nodes with `outputSchema` now use AI SDK `generateText()` with `Output.object({ schema: jsonSchema(...) })`;
   - schema is also included in the rendered prompt for OpenAI-compatible providers that do not fully enforce response format;
   - schema, timeout, retry count, model, usage, prompt, and safe visible messages are persisted in node trace.
+- Added flow-control semantics:
+  - all non-start nodes support `inputMapping`, where `$.path` values are read from upstream JSON and plain strings remain literals;
+  - transform nodes now map/filter upstream JSON without a model call and can optionally select an `outputPath`;
+  - condition nodes can evaluate a configured condition and emit `{ condition, input }`;
+  - edges can store JSON conditions such as `{ "path": "$.condition", "equals": true }`;
+  - conditional outgoing edges select matching branches, and merge nodes no longer wait for unselected sibling branches.
+- Extended the editor configuration surface:
+  - prompt, transform, and condition nodes expose input mapping in the inspector;
+  - transform nodes expose output path editing;
+  - condition nodes expose condition JSON editing;
+  - the connect toolbar can attach an edge condition JSON object.
 
 Verified:
 
@@ -723,11 +734,11 @@ Verified:
 - Playwright smoke: opened Flows tab, created a flow, ran it from the UI, saw node inspector/run status, and captured `/tmp/ai-sdk-demo-flow-run-ui.png`
 - API smoke: patched a prompt node title/config, ran Start -> Prompt -> End with an output schema, and received schema-valid JSON output
 - Playwright smoke: edited a prompt node title/prompt/schema in the inspector, saved it through the UI, and verified the persisted config through `GET /api/flows/[flowId]`; screenshot captured at `/tmp/ai-sdk-demo-flow-config-ui.png`
+- API smoke: ran Start -> Transform -> Condition -> branch -> End, verified mapped JSON output and that only the matched branch executed
+- Playwright smoke: edited a transform node input mapping/output path in the inspector, saved it through the UI, and verified the PATCH response; screenshot captured at `/tmp/ai-sdk-demo-flow-mapping-ui.png`
 
 Remaining:
 
-- Add input mapping UI and execution semantics.
 - Add full chat-thread linkage for prompt node runs; current implementation stores a safe trace, not a reusable chat transcript.
-- Add transform/condition execution semantics beyond pass-through.
 - Add node/edge deletion, node drag/pan/zoom, and richer infinite-canvas interactions.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.

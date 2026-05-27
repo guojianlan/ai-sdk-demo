@@ -175,6 +175,7 @@ export async function createFlowEdgeOnApi(params: {
   flowId: string;
   sourceNodeId: string;
   targetNodeId: string;
+  condition?: unknown | null;
 }): Promise<FlowEdge> {
   const response = await fetch(
     `/api/flows/${encodeURIComponent(params.flowId)}/edges`,
@@ -184,6 +185,7 @@ export async function createFlowEdgeOnApi(params: {
       body: JSON.stringify({
         sourceNodeId: params.sourceNodeId,
         targetNodeId: params.targetNodeId,
+        condition: params.condition ?? null,
       }),
     },
   );

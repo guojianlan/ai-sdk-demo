@@ -770,10 +770,21 @@ function defaultNodeConfig(type: FlowNodeType): unknown {
     };
   }
   if (type === "condition") {
-    return { expression: "" };
+    return {
+      condition: {
+        path: "$.ok",
+        equals: true,
+      },
+    };
   }
   if (type === "start") {
     return { input: {} };
+  }
+  if (type === "transform") {
+    return {
+      inputMapping: {},
+      outputPath: "$",
+    };
   }
   return {};
 }

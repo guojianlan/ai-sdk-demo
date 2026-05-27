@@ -20,8 +20,17 @@ const MAX_EXECUTED_NODES = 100;
 type PromptNodeConfig = {
   prompt?: unknown;
   outputSchema?: unknown;
+  inputMapping?: unknown;
+  inputPath?: unknown;
   retry?: unknown;
   timeoutMs?: unknown;
+};
+
+type GenericNodeConfig = {
+  inputMapping?: unknown;
+  inputPath?: unknown;
+  outputPath?: unknown;
+  condition?: unknown;
 };
 
 type RetryConfig = {
@@ -102,10 +111,11 @@ export async function executeFlow(params: {
       }
       stalledTurns = 0;
 
-      const input =
+      const rawInput =
         node.type === "start"
           ? params.input ?? getConfiguredStartInput(node)
           : buildNodeInput(node, graph.edges, outputByNode);
+      const input = applyNodeInputMapping(node, rawInput);
 
       const nodeRun = createFlowNodeRun({
         flowRunId: run.id,
@@ -139,8 +149,12 @@ export async function executeFlow(params: {
         throw new Error(`${node.title}: ${message}`);
       }
 
-      for (const edge of graph.edges) {
-        if (edge.sourceNodeId === node.id && !executed.has(edge.targetNodeId)) {
+      for (const edge of selectOutgoingEdges({
+        node,
+        edges: graph.edges,
+        output: outputByNode.get(node.id),
+      })) {
+        if (!executed.has(edge.targetNodeId)) {
           queue.push(edge.targetNodeId);
         }
       }
@@ -196,12 +210,67 @@ async function executeNode(
     };
   }
 
+  if (node.type === "transform") {
+    return executeTransformNode(node, input);
+  }
+
+  if (node.type === "condition") {
+    return executeConditionNode(node, input);
+  }
+
   return {
     output: input,
     trace: {
       kind: node.type,
       mode: "pass-through",
       output: input,
+    },
+  };
+}
+
+function executeTransformNode(
+  node: FlowNode,
+  input: unknown,
+): NodeExecutionResult {
+  const config = normalizeGenericNodeConfig(node.config);
+  const output = config.outputPath ? getPath(input, config.outputPath) : input;
+  return {
+    output,
+    trace: {
+      kind: "transform",
+      input,
+      outputPath: config.outputPath,
+      output,
+    },
+  };
+}
+
+function executeConditionNode(
+  node: FlowNode,
+  input: unknown,
+): NodeExecutionResult {
+  const config = normalizeGenericNodeConfig(node.config);
+  if (config.condition === undefined) {
+    return {
+      output: input,
+      trace: {
+        kind: "condition",
+        mode: "pass-through",
+        input,
+        output: input,
+      },
+    };
+  }
+  const matched = evaluateCondition(config.condition, input);
+  const output = { condition: matched, input };
+  return {
+    output,
+    trace: {
+      kind: "condition",
+      condition: config.condition,
+      matched,
+      input,
+      output,
     },
   };
 }
@@ -279,6 +348,41 @@ function buildNodeInput(
   return { inputs: upstream };
 }
 
+function applyNodeInputMapping(node: FlowNode, input: unknown): unknown {
+  if (node.type === "start") return input;
+  const config = normalizeGenericNodeConfig(node.config);
+  if (config.inputPath) {
+    return getPath(input, config.inputPath);
+  }
+  if (isRecord(config.inputMapping) && Object.keys(config.inputMapping).length > 0) {
+    const output: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(config.inputMapping)) {
+      output[key] =
+        typeof value === "string" && isPathExpression(value)
+          ? getPath(input, value)
+          : value;
+    }
+    return output;
+  }
+  return input;
+}
+
+function selectOutgoingEdges(params: {
+  node: FlowNode;
+  edges: FlowEdge[];
+  output: unknown;
+}): FlowEdge[] {
+  const outgoing = params.edges.filter((edge) => edge.sourceNodeId === params.node.id);
+  const conditional = outgoing.filter((edge) => edge.condition != null);
+  if (conditional.length === 0) return outgoing;
+
+  const matched = conditional.filter((edge) =>
+    evaluateCondition(edge.condition, params.output),
+  );
+  if (matched.length > 0) return matched;
+  return outgoing.filter((edge) => edge.condition == null);
+}
+
 function buildPromptText(params: {
   prompt: string;
   input: unknown;
@@ -318,6 +422,11 @@ function isNodeReady(params: {
       edge.targetNodeId === params.node.id &&
       params.reachableNodeIds.has(edge.sourceNodeId),
   );
+  if (incomingReachableEdges.length > 1) {
+    return incomingReachableEdges.some((edge) =>
+      params.executed.has(edge.sourceNodeId),
+    );
+  }
   return incomingReachableEdges.every((edge) =>
     params.executed.has(edge.sourceNodeId),
   );
@@ -377,6 +486,25 @@ function normalizePromptConfig(config: unknown): NormalizedPromptConfig {
   };
 }
 
+function normalizeGenericNodeConfig(config: unknown): {
+  inputMapping: unknown;
+  inputPath: string | null;
+  outputPath: string | null;
+  condition: unknown;
+} {
+  const maybe = isRecord(config) ? (config as GenericNodeConfig) : {};
+  return {
+    inputMapping: maybe.inputMapping,
+    inputPath: typeof maybe.inputPath === "string" && maybe.inputPath.trim()
+      ? maybe.inputPath.trim()
+      : null,
+    outputPath: typeof maybe.outputPath === "string" && maybe.outputPath.trim()
+      ? maybe.outputPath.trim()
+      : null,
+    condition: maybe.condition,
+  };
+}
+
 function normalizeRetryConfig(value: unknown): RetryConfig {
   if (!isRecord(value)) {
     return { maxAttempts: 3 };
@@ -416,6 +544,69 @@ function createTimeoutSignal(timeoutMs: number | null): AbortSignal | undefined 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function evaluateCondition(condition: unknown, value: unknown): boolean {
+  if (condition == null) return true;
+  if (typeof condition === "boolean") return condition;
+  if (typeof condition === "string") return Boolean(getPath(value, condition));
+  if (!isRecord(condition)) return false;
+
+  const pathValue =
+    typeof condition.path === "string" && condition.path.trim()
+      ? getPath(value, condition.path)
+      : value;
+
+  if ("exists" in condition) {
+    return condition.exists ? pathValue !== undefined : pathValue === undefined;
+  }
+  if ("truthy" in condition) {
+    return condition.truthy ? Boolean(pathValue) : !pathValue;
+  }
+  if ("equals" in condition) {
+    return isDeepEqual(pathValue, condition.equals);
+  }
+  if ("notEquals" in condition) {
+    return !isDeepEqual(pathValue, condition.notEquals);
+  }
+  if (Array.isArray(condition.in)) {
+    return condition.in.some((item) => isDeepEqual(pathValue, item));
+  }
+  return Boolean(pathValue);
+}
+
+function getPath(value: unknown, path: string): unknown {
+  const trimmed = path.trim();
+  if (!trimmed || trimmed === "$" || trimmed === ".") return value;
+  const normalized = trimmed
+    .replace(/^\$\./, "")
+    .replace(/^\$/, "")
+    .replace(/\[(\d+)\]/g, ".$1")
+    .replace(/^\./, "");
+  if (!normalized) return value;
+
+  let current = value;
+  for (const segment of normalized.split(".").filter(Boolean)) {
+    if (current == null) return undefined;
+    if (Array.isArray(current)) {
+      const index = Number(segment);
+      if (!Number.isInteger(index)) return undefined;
+      current = current[index];
+      continue;
+    }
+    if (!isRecord(current)) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+function isPathExpression(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed === "$" || trimmed.startsWith("$.") || trimmed.startsWith(".");
+}
+
+function isDeepEqual(left: unknown, right: unknown): boolean {
+  return stableStringify(left) === stableStringify(right);
 }
 
 function stableStringify(value: unknown): string {

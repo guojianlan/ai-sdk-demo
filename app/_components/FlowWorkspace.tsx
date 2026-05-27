@@ -46,6 +46,7 @@ export function FlowWorkspace({
   const [nodeType, setNodeType] = useState<FlowNodeType>("prompt");
   const [edgeSource, setEdgeSource] = useState("");
   const [edgeTarget, setEdgeTarget] = useState("");
+  const [edgeConditionDraft, setEdgeConditionDraft] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [runs, setRuns] = useState<FlowRun[]>([]);
   const [activeRun, setActiveRun] = useState<FlowRunWithNodes | null>(null);
@@ -222,6 +223,9 @@ export function FlowWorkspace({
         flowId: graph.flow.id,
         sourceNodeId: edgeSource,
         targetNodeId: edgeTarget,
+        condition: edgeConditionDraft.trim()
+          ? parseConfigJson(edgeConditionDraft, "Edge condition")
+          : null,
       });
       const nextGraph = await fetchFlowGraph(graph.flow.id);
       setGraph(nextGraph);
@@ -345,9 +349,11 @@ export function FlowWorkspace({
             nodeType={nodeType}
             edgeSource={edgeSource}
             edgeTarget={edgeTarget}
+            edgeConditionDraft={edgeConditionDraft}
             onNodeTypeChange={setNodeType}
             onEdgeSourceChange={setEdgeSource}
             onEdgeTargetChange={setEdgeTarget}
+            onEdgeConditionDraftChange={setEdgeConditionDraft}
             selectedNodeId={selectedNodeId}
             onSelectedNodeChange={setSelectedNodeId}
             runs={runs}
@@ -377,9 +383,11 @@ function FlowEditor({
   nodeType,
   edgeSource,
   edgeTarget,
+  edgeConditionDraft,
   onNodeTypeChange,
   onEdgeSourceChange,
   onEdgeTargetChange,
+  onEdgeConditionDraftChange,
   selectedNodeId,
   onSelectedNodeChange,
   runs,
@@ -398,9 +406,11 @@ function FlowEditor({
   nodeType: FlowNodeType;
   edgeSource: string;
   edgeTarget: string;
+  edgeConditionDraft: string;
   onNodeTypeChange: (type: FlowNodeType) => void;
   onEdgeSourceChange: (id: string) => void;
   onEdgeTargetChange: (id: string) => void;
+  onEdgeConditionDraftChange: (value: string) => void;
   selectedNodeId: string;
   onSelectedNodeChange: (id: string) => void;
   runs: FlowRun[];
@@ -502,6 +512,12 @@ function FlowEditor({
         >
           Connect
         </button>
+        <input
+          value={edgeConditionDraft}
+          onChange={(event) => onEdgeConditionDraftChange(event.target.value)}
+          className="h-9 min-w-60 flex-1 rounded-md border border-slate-300 bg-white px-2 font-mono text-xs outline-none focus:border-slate-900"
+          placeholder='{"path":"$.condition","equals":true}'
+        />
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-auto rounded-md border border-slate-300 bg-[linear-gradient(#e2e8f0_1px,transparent_1px),linear-gradient(90deg,#e2e8f0_1px,transparent_1px)] bg-[size:32px_32px]">
@@ -739,10 +755,18 @@ function NodeConfigForm({
   }) => void;
 }) {
   const promptConfig = normalizePromptConfigForForm(node.config);
+  const flowConfig = normalizeFlowControlConfigForForm(node.config);
   const [titleDraft, setTitleDraft] = useState(node.title);
   const [promptDraft, setPromptDraft] = useState(promptConfig.prompt);
+  const [inputMappingDraft, setInputMappingDraft] = useState(
+    JSON.stringify(flowConfig.inputMapping, null, 2),
+  );
   const [schemaDraft, setSchemaDraft] = useState(
     JSON.stringify(promptConfig.outputSchema, null, 2),
+  );
+  const [outputPathDraft, setOutputPathDraft] = useState(flowConfig.outputPath);
+  const [conditionDraft, setConditionDraft] = useState(
+    JSON.stringify(flowConfig.condition, null, 2),
   );
   const [retryDraft, setRetryDraft] = useState(
     String(promptConfig.retry.maxAttempts),
@@ -763,11 +787,24 @@ function NodeConfigForm({
           ? buildPromptConfig({
               existing: node.config,
               prompt: promptDraft,
+              inputMappingText: inputMappingDraft,
               schemaText: schemaDraft,
               retryText: retryDraft,
               timeoutText: timeoutDraft,
             })
-          : parseConfigJson(configDraft, "Config");
+          : node.type === "transform"
+            ? buildTransformConfig({
+                existing: node.config,
+                inputMappingText: inputMappingDraft,
+                outputPath: outputPathDraft,
+              })
+            : node.type === "condition"
+              ? buildConditionConfig({
+                  existing: node.config,
+                  inputMappingText: inputMappingDraft,
+                  conditionText: conditionDraft,
+                })
+              : parseConfigJson(configDraft, "Config");
       onSaveNode({
         nodeId: node.id,
         title: titleDraft,
@@ -792,6 +829,10 @@ function NodeConfigForm({
       </label>
       {node.type === "prompt" ? (
         <>
+          <InputMappingEditor
+            value={inputMappingDraft}
+            onChange={setInputMappingDraft}
+          />
           <label className="block">
             <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
               Prompt
@@ -839,6 +880,42 @@ function NodeConfigForm({
             </label>
           </div>
         </>
+      ) : node.type === "transform" ? (
+        <>
+          <InputMappingEditor
+            value={inputMappingDraft}
+            onChange={setInputMappingDraft}
+          />
+          <label className="block">
+            <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+              Output Path
+            </span>
+            <input
+              value={outputPathDraft}
+              onChange={(event) => setOutputPathDraft(event.target.value)}
+              className="h-9 w-full rounded-md border border-slate-300 px-2 font-mono text-xs outline-none focus:border-slate-900"
+              placeholder="$"
+            />
+          </label>
+        </>
+      ) : node.type === "condition" ? (
+        <>
+          <InputMappingEditor
+            value={inputMappingDraft}
+            onChange={setInputMappingDraft}
+          />
+          <label className="block">
+            <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+              Condition
+            </span>
+            <textarea
+              value={conditionDraft}
+              onChange={(event) => setConditionDraft(event.target.value)}
+              spellCheck={false}
+              className="h-32 w-full resize-none rounded-md border border-slate-300 bg-white p-2 font-mono text-xs leading-5 outline-none focus:border-slate-900"
+            />
+          </label>
+        </>
       ) : (
         <label className="block">
           <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
@@ -866,6 +943,28 @@ function NodeConfigForm({
         {savingNode ? "Saving" : "Save Node"}
       </button>
     </>
+  );
+}
+
+function InputMappingEditor({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+        Input Mapping
+      </span>
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        spellCheck={false}
+        className="h-24 w-full resize-none rounded-md border border-slate-300 bg-white p-2 font-mono text-xs leading-5 outline-none focus:border-slate-900"
+      />
+    </label>
   );
 }
 
@@ -925,14 +1024,35 @@ function normalizePromptConfigForForm(config: unknown): {
   };
 }
 
+function normalizeFlowControlConfigForForm(config: unknown): {
+  inputMapping: unknown;
+  outputPath: string;
+  condition: unknown;
+} {
+  const maybe = isRecord(config) ? config : {};
+  return {
+    inputMapping: isRecord(maybe.inputMapping) ? maybe.inputMapping : {},
+    outputPath: typeof maybe.outputPath === "string" ? maybe.outputPath : "$",
+    condition:
+      maybe.condition === undefined
+        ? {
+            path: "$.ok",
+            equals: true,
+          }
+        : maybe.condition,
+  };
+}
+
 function buildPromptConfig(params: {
   existing: unknown;
   prompt: string;
+  inputMappingText: string;
   schemaText: string;
   retryText: string;
   timeoutText: string;
 }): unknown {
   const existing = isRecord(params.existing) ? params.existing : {};
+  const inputMapping = parseInputMapping(params.inputMappingText);
   const outputSchema = parseConfigJson(
     params.schemaText.trim() || "{}",
     "Output schema",
@@ -943,12 +1063,51 @@ function buildPromptConfig(params: {
   return {
     ...existing,
     prompt: params.prompt.trim() || "Use the input JSON and return the next JSON object.",
+    inputMapping,
     outputSchema,
     retry: {
       maxAttempts: normalizeInteger(Number(params.retryText), 3, 1, 5),
     },
     timeoutMs: normalizeInteger(Number(params.timeoutText), 60_000, 1_000, 300_000),
   };
+}
+
+function buildTransformConfig(params: {
+  existing: unknown;
+  inputMappingText: string;
+  outputPath: string;
+}): unknown {
+  const existing = isRecord(params.existing) ? params.existing : {};
+  return {
+    ...existing,
+    inputMapping: parseInputMapping(params.inputMappingText),
+    outputPath: params.outputPath.trim() || "$",
+  };
+}
+
+function buildConditionConfig(params: {
+  existing: unknown;
+  inputMappingText: string;
+  conditionText: string;
+}): unknown {
+  const existing = isRecord(params.existing) ? params.existing : {};
+  const condition = parseConfigJson(
+    params.conditionText.trim() || "{}",
+    "Condition",
+  );
+  return {
+    ...existing,
+    inputMapping: parseInputMapping(params.inputMappingText),
+    condition,
+  };
+}
+
+function parseInputMapping(value: string): Record<string, unknown> {
+  const parsed = parseConfigJson(value.trim() || "{}", "Input mapping");
+  if (!isRecord(parsed)) {
+    throw new Error("Input mapping 必须是 JSON object。");
+  }
+  return parsed;
 }
 
 function normalizeInteger(
