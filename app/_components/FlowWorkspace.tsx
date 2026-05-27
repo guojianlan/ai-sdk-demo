@@ -1,7 +1,15 @@
 "use client";
 
 import type { UIMessage } from "ai";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 
 import {
   createFlowEdgeOnApi,
@@ -35,6 +43,14 @@ const NODE_TYPES: FlowNodeType[] = [
   "condition",
   "end",
 ];
+
+const CANVAS_WIDTH = 2400;
+const CANVAS_HEIGHT = 1600;
+const NODE_WIDTH = 192;
+const NODE_HEIGHT = 72;
+const GRID_SIZE = 32;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 1.8;
 
 export function FlowWorkspace({
   workspaces,
@@ -274,6 +290,49 @@ export function FlowWorkspace({
     }
   }
 
+  function handlePreviewNodePosition(
+    nodeId: string,
+    position: { x: number; y: number },
+  ) {
+    setGraph((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        nodes: current.nodes.map((node) =>
+          node.id === nodeId ? { ...node, position } : node,
+        ),
+      };
+    });
+  }
+
+  async function handleCommitNodePosition(
+    nodeId: string,
+    position: { x: number; y: number },
+  ) {
+    if (!graph) return;
+    setError("");
+    try {
+      const node = await updateFlowNodeOnApi({
+        flowId: graph.flow.id,
+        nodeId,
+        position,
+      });
+      setGraph((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          nodes: current.nodes.map((item) =>
+            item.id === node.id ? node : item,
+          ),
+        };
+      });
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error ? saveError.message : "保存节点位置失败",
+      );
+    }
+  }
+
   async function handleDeleteNode(nodeId: string) {
     if (!graph) return;
     setError("");
@@ -434,6 +493,10 @@ export function FlowWorkspace({
             onRunFlow={() => void handleRunFlow()}
             onSelectRun={(runId) => void handleSelectRun(runId)}
             onSaveNode={(params) => void handleSaveNode(params)}
+            onPreviewNodePosition={handlePreviewNodePosition}
+            onCommitNodePosition={(nodeId, position) =>
+              void handleCommitNodePosition(nodeId, position)
+            }
             onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
             onDeleteEdge={(edgeId) => void handleDeleteEdge(edgeId)}
           />
@@ -472,6 +535,8 @@ function FlowEditor({
   onRunFlow,
   onSelectRun,
   onSaveNode,
+  onPreviewNodePosition,
+  onCommitNodePosition,
   onDeleteNode,
   onDeleteEdge,
 }: {
@@ -503,9 +568,38 @@ function FlowEditor({
     title: string;
     config: unknown;
   }) => void;
+  onPreviewNodePosition: (
+    nodeId: string,
+    position: { x: number; y: number },
+  ) => void;
+  onCommitNodePosition: (
+    nodeId: string,
+    position: { x: number; y: number },
+  ) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    nodeId: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startPosition: { x: number; y: number };
+    lastPosition: { x: number; y: number };
+  } | null>(null);
+  const panRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startPan: { x: number; y: number };
+  } | null>(null);
+  const [viewport, setViewport] = useState({
+    pan: { x: 0, y: 0 },
+    scale: 1,
+  });
+  const [draggingNodeId, setDraggingNodeId] = useState("");
+  const [panning, setPanning] = useState(false);
   const selectedNode = selectedNodeId
     ? graph.nodes.find((node) => node.id === selectedNodeId)
     : undefined;
@@ -515,6 +609,126 @@ function FlowEditor({
   const selectedNodeRun = selectedNode
     ? activeRun?.nodeRuns.find((run) => run.nodeId === selectedNode.id) ?? null
     : null;
+  const clampNodePosition = useCallback((position: { x: number; y: number }) => {
+    return {
+      x: clamp(Math.round(position.x), 0, CANVAS_WIDTH - NODE_WIDTH),
+      y: clamp(Math.round(position.y), 0, CANVAS_HEIGHT - NODE_HEIGHT),
+    };
+  }, []);
+  const updateZoom = useCallback((nextScale: number, center?: { x: number; y: number }) => {
+    setViewport((current) => {
+      const viewportElement = viewportRef.current;
+      const scale = clamp(nextScale, MIN_ZOOM, MAX_ZOOM);
+      if (!viewportElement) {
+        return { ...current, scale };
+      }
+
+      const rect = viewportElement.getBoundingClientRect();
+      const centerPoint = center ?? {
+        x: rect.width / 2,
+        y: rect.height / 2,
+      };
+      const canvasX = (centerPoint.x - current.pan.x) / current.scale;
+      const canvasY = (centerPoint.y - current.pan.y) / current.scale;
+      return {
+        pan: {
+          x: centerPoint.x - canvasX * scale,
+          y: centerPoint.y - canvasY * scale,
+        },
+        scale,
+      };
+    });
+  }, []);
+
+  function handleNodePointerDown(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    node: FlowNode,
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onSelectedNodeChange(node.id);
+    dragRef.current = {
+      nodeId: node.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startPosition: node.position,
+      lastPosition: node.position,
+    };
+    setDraggingNodeId(node.id);
+  }
+
+  function handleNodePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const nextPosition = clampNodePosition({
+      x: drag.startPosition.x + (event.clientX - drag.startClientX) / viewport.scale,
+      y: drag.startPosition.y + (event.clientY - drag.startClientY) / viewport.scale,
+    });
+    drag.lastPosition = nextPosition;
+    onPreviewNodePosition(drag.nodeId, nextPosition);
+  }
+
+  function finishNodeDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    setDraggingNodeId("");
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    onCommitNodePosition(drag.nodeId, drag.lastPosition);
+  }
+
+  function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest("[data-flow-node],[data-flow-edge],button,input,select,textarea")
+    ) {
+      return;
+    }
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startPan: viewport.pan,
+    };
+    setPanning(true);
+  }
+
+  function handleCanvasPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    setViewport((current) => ({
+      ...current,
+      pan: {
+        x: pan.startPan.x + event.clientX - pan.startClientX,
+        y: pan.startPan.y + event.clientY - pan.startClientY,
+      },
+    }));
+  }
+
+  function finishCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    panRef.current = null;
+    setPanning(false);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  function handleCanvasWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const nextScale = viewport.scale * (event.deltaY > 0 ? 0.9 : 1.1);
+    updateZoom(nextScale, {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    });
+  }
 
   return (
     <div className="grid min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -529,6 +743,31 @@ function FlowEditor({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex h-9 items-center overflow-hidden rounded-md border border-slate-300 bg-white">
+            <button
+              type="button"
+              onClick={() => updateZoom(viewport.scale - 0.1)}
+              className="h-full w-9 border-r border-slate-200 font-mono text-sm text-slate-700 hover:bg-slate-50"
+              aria-label="Zoom out"
+            >
+              -
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewport({ pan: { x: 0, y: 0 }, scale: 1 })}
+              className="h-full w-16 border-r border-slate-200 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-600 hover:bg-slate-50"
+            >
+              {Math.round(viewport.scale * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => updateZoom(viewport.scale + 0.1)}
+              className="h-full w-9 font-mono text-sm text-slate-700 hover:bg-slate-50"
+              aria-label="Zoom in"
+            >
+              +
+            </button>
+          </div>
           <select
             value={nodeType}
             onChange={(event) =>
@@ -601,8 +840,32 @@ function FlowEditor({
         />
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-auto rounded-md border border-slate-300 bg-[linear-gradient(#e2e8f0_1px,transparent_1px),linear-gradient(90deg,#e2e8f0_1px,transparent_1px)] bg-[size:32px_32px]">
-        <div className="relative h-[720px] w-[1120px]">
+      <div
+        ref={viewportRef}
+        data-flow-canvas-viewport
+        onPointerDown={handleCanvasPointerDown}
+        onPointerMove={handleCanvasPointerMove}
+        onPointerUp={finishCanvasPan}
+        onPointerCancel={finishCanvasPan}
+        onWheel={handleCanvasWheel}
+        className={[
+          "relative min-h-0 flex-1 touch-none overflow-hidden rounded-md border border-slate-300 bg-[linear-gradient(#e2e8f0_1px,transparent_1px),linear-gradient(90deg,#e2e8f0_1px,transparent_1px)]",
+          panning ? "cursor-grabbing" : "cursor-grab",
+        ].join(" ")}
+        style={{
+          backgroundPosition: `${viewport.pan.x}px ${viewport.pan.y}px`,
+          backgroundSize: `${GRID_SIZE * viewport.scale}px ${GRID_SIZE * viewport.scale}px`,
+        }}
+      >
+        <div
+          className="relative"
+          style={{
+            width: CANVAS_WIDTH,
+            height: CANVAS_HEIGHT,
+            transform: `translate(${viewport.pan.x}px, ${viewport.pan.y}px) scale(${viewport.scale})`,
+            transformOrigin: "0 0",
+          }}
+        >
           <svg className="pointer-events-none absolute inset-0 h-full w-full">
             {graph.edges.map((edge) => {
               const source = graph.nodes.find((node) => node.id === edge.sourceNodeId);
@@ -612,6 +875,7 @@ function FlowEditor({
               return (
                 <g
                   key={edge.id}
+                  data-flow-edge
                   className="pointer-events-auto cursor-pointer"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -644,8 +908,13 @@ function FlowEditor({
               key={node.id}
               node={node}
               selected={node.id === selectedNode?.id}
+              dragging={node.id === draggingNodeId}
               nodeRun={activeRun?.nodeRuns.find((run) => run.nodeId === node.id)}
               onSelect={() => onSelectedNodeChange(node.id)}
+              onPointerDown={(event) => handleNodePointerDown(event, node)}
+              onPointerMove={handleNodePointerMove}
+              onPointerUp={finishNodeDrag}
+              onPointerCancel={finishNodeDrag}
             />
           ))}
         </div>
@@ -676,21 +945,39 @@ function FlowEditor({
 function FlowNodeCard({
   node,
   selected,
+  dragging,
   nodeRun,
   onSelect,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
 }: {
   node: FlowNode;
   selected: boolean;
+  dragging: boolean;
   nodeRun?: FlowNodeRun;
   onSelect: () => void;
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
       type="button"
+      data-flow-node
       onClick={onSelect}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       className={[
-        "absolute w-48 rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
-        selected ? "border-emerald-700 ring-2 ring-emerald-100" : "border-slate-900",
+        "absolute w-48 touch-none rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
+        dragging ? "cursor-grabbing shadow-md" : "cursor-grab",
+        selected
+          ? "border-emerald-700 ring-2 ring-emerald-100"
+          : "border-slate-900",
       ].join(" ")}
       style={{ left: node.position.x, top: node.position.y }}
     >
@@ -1229,6 +1516,10 @@ function parseJsonDraft(value: string): unknown {
   } catch {
     throw new Error("Run input 必须是合法 JSON。");
   }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function messageToText(message: UIMessage): string {

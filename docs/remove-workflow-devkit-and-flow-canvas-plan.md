@@ -730,6 +730,12 @@ Completed:
   - historical `flow_node_runs` are preserved so old run records are not destroyed by canvas edits;
   - the canvas can select an edge, show its source/target/condition, and delete it from the inspector;
   - the node inspector exposes a guarded delete action for editable nodes.
+- Added canvas drag, pan, and zoom:
+  - nodes can be dragged inside a larger `2400 x 1600` canvas coordinate space;
+  - node positions are previewed immediately and persisted through the existing node `PATCH` route on drag end;
+  - edge rendering follows updated node positions because edges are still derived from persisted node coordinates;
+  - the canvas supports background drag-to-pan;
+  - zoom controls and wheel zoom update both the transformed surface and grid background around the active viewport point.
 
 Verified:
 
@@ -755,8 +761,9 @@ Verified:
 - API smoke: verified archived transcript threads do not appear in the visible sessions list
 - API smoke: created a flow, added a node and edge, deleted the edge, deleted the node, and verified the node and connected edges were absent afterward.
 - Browser smoke on `127.0.0.1:3002`: opened Flows, created `UI delete QA flow`, added a Prompt node, connected it, selected and deleted the edge, selected and deleted the Prompt node, and verified the UI returned to `2 nodes · 0 edges` without console errors.
+- Browser smoke on `127.0.0.1:3002`: opened Flows, loaded `UI pan zoom QA flow`, dragged the Start node from `{ x: 120, y: 180 }` to `{ x: 200, y: 230 }`, verified the persisted position via `GET /api/flows/[flowId]`, reloaded the page and confirmed the same node position still rendered, zoomed to `110%`, panned the canvas, and captured `/tmp/ai-sdk-demo-flow-pan-zoom-ui.png`.
 
 Remaining:
 
-- Add node drag/pan/zoom and richer infinite-canvas interactions.
+- Add richer infinite-canvas interactions such as minimap, selection boxes, better edge routing, and edge editing.
 - Decide whether local active chat run replay should remain process-local only or become durable across process restarts.
