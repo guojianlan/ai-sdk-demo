@@ -1,14 +1,30 @@
 "use client";
 
-import type { UIMessage } from "ai";
 import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
-} from "react";
+  Background,
+  BackgroundVariant,
+  ConnectionMode,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  SelectionMode,
+  type Connection,
+  type CoordinateExtent,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type NodeTypes,
+  type OnConnect,
+  type OnNodeDrag,
+  type OnSelectionChangeFunc,
+  type SelectionDragHandler,
+} from "@xyflow/react";
+import type { UIMessage } from "ai";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   archiveFlowOnApi,
@@ -49,19 +65,31 @@ const NODE_TYPES: FlowNodeType[] = [
 const CANVAS_WIDTH = 2400;
 const CANVAS_HEIGHT = 1600;
 const NODE_WIDTH = 192;
-const NODE_HEIGHT = 72;
-const GRID_SIZE = 32;
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 1.8;
-const MINIMAP_WIDTH = 180;
-const MINIMAP_HEIGHT = 120;
+const FLOW_EXTENT: CoordinateExtent = [
+  [0, 0],
+  [CANVAS_WIDTH, CANVAS_HEIGHT],
+];
+const FLOW_NODE_TYPES = {
+  flowNode: FlowNodeCard,
+} satisfies NodeTypes;
 
 type NodePositionPatch = {
   nodeId: string;
   position: { x: number; y: number };
 };
 
-type CanvasPoint = { x: number; y: number };
+type FlowCanvasNodeData = {
+  node: FlowNode;
+  nodeRun?: FlowNodeRun;
+};
+
+type FlowCanvasNode = Node<FlowCanvasNodeData, "flowNode">;
+
+type FlowCanvasEdgeData = {
+  edge: FlowEdge;
+};
+
+type FlowCanvasEdge = Edge<FlowCanvasEdgeData, "smoothstep">;
 
 export function FlowWorkspace({
   workspaces,
@@ -729,58 +757,8 @@ function FlowEditor({
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    nodeIds: string[];
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    startPositions: Record<string, { x: number; y: number }>;
-    lastPositions: Record<string, { x: number; y: number }>;
-  } | null>(null);
-  const panRef = useRef<{
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    startPan: { x: number; y: number };
-  } | null>(null);
-  const selectionRef = useRef<{
-    pointerId: number;
-    additive: boolean;
-    start: { x: number; y: number };
-    current: { x: number; y: number };
-  } | null>(null);
-  const connectionRef = useRef<{
-    pointerId: number;
-    sourceNodeId: string;
-    start: CanvasPoint;
-    current: CanvasPoint;
-    targetNodeId: string;
-  } | null>(null);
-  const [viewport, setViewport] = useState({
-    pan: { x: 0, y: 0 },
-    scale: 1,
-  });
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([]);
-  const [panning, setPanning] = useState(false);
   const [detailNodeId, setDetailNodeId] = useState("");
-  const [connectionDraft, setConnectionDraft] = useState<{
-    sourceNodeId: string;
-    start: CanvasPoint;
-    current: CanvasPoint;
-    targetNodeId: string;
-  } | null>(null);
-  const [selectionBox, setSelectionBox] = useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const selectedNodeIdSet = useMemo(
-    () => new Set(selectedNodeIds),
-    [selectedNodeIds],
-  );
+
   const selectedNode = selectedNodeId
     ? graph.nodes.find((node) => node.id === selectedNodeId)
     : undefined;
@@ -796,373 +774,131 @@ function FlowEditor({
   const detailNodeRun = detailNode
     ? activeRun?.nodeRuns.find((run) => run.nodeId === detailNode.id) ?? null
     : null;
+  const nodeTypes = useMemo(() => FLOW_NODE_TYPES, []);
 
-  function clampNodePosition(position: { x: number; y: number }) {
-    return {
-      x: clamp(Math.round(position.x), 0, CANVAS_WIDTH - NODE_WIDTH),
-      y: clamp(Math.round(position.y), 0, CANVAS_HEIGHT - NODE_HEIGHT),
-    };
-  }
-
-  function clientPointToCanvasPoint(event: ReactPointerEvent<HTMLElement>) {
-    const viewportElement = viewportRef.current;
-    if (!viewportElement) return { x: 0, y: 0 };
-    const rect = viewportElement.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left - viewport.pan.x) / viewport.scale,
-      y: (event.clientY - rect.top - viewport.pan.y) / viewport.scale,
-    };
-  }
-
-  function getNodeInputPoint(node: FlowNode): CanvasPoint {
-    return {
-      x: node.position.x,
-      y: node.position.y + NODE_HEIGHT / 2,
-    };
-  }
-
-  function getNodeOutputPoint(node: FlowNode): CanvasPoint {
-    return {
-      x: node.position.x + NODE_WIDTH,
-      y: node.position.y + NODE_HEIGHT / 2,
-    };
-  }
-
-  function getNodeAtCanvasPoint(point: CanvasPoint, excludedNodeId: string) {
-    return graph.nodes.find((node) => {
-      if (node.id === excludedNodeId) return false;
-      return (
-        point.x >= node.position.x &&
-        point.x <= node.position.x + NODE_WIDTH &&
-        point.y >= node.position.y &&
-        point.y <= node.position.y + NODE_HEIGHT
-      );
-    });
-  }
-
-  function normalizeSelectionBox(
-    start: { x: number; y: number },
-    current: { x: number; y: number },
-  ) {
-    const x = clamp(Math.min(start.x, current.x), 0, CANVAS_WIDTH);
-    const y = clamp(Math.min(start.y, current.y), 0, CANVAS_HEIGHT);
-    const right = clamp(Math.max(start.x, current.x), 0, CANVAS_WIDTH);
-    const bottom = clamp(Math.max(start.y, current.y), 0, CANVAS_HEIGHT);
-    return {
-      x,
-      y,
-      width: right - x,
-      height: bottom - y,
-    };
-  }
-
-  function getNodeIdsInsideBox(box: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  }) {
-    const right = box.x + box.width;
-    const bottom = box.y + box.height;
-    return graph.nodes
-      .filter((node) => {
-        const nodeRight = node.position.x + NODE_WIDTH;
-        const nodeBottom = node.position.y + NODE_HEIGHT;
-        return (
-          node.position.x <= right &&
-          nodeRight >= box.x &&
-          node.position.y <= bottom &&
-          nodeBottom >= box.y
-        );
-      })
-      .map((node) => node.id);
-  }
-
-  function updateZoom(nextScale: number, center?: { x: number; y: number }) {
-    setViewport((current) => {
-      const viewportElement = viewportRef.current;
-      const scale = clamp(nextScale, MIN_ZOOM, MAX_ZOOM);
-      if (!viewportElement) {
-        return { ...current, scale };
-      }
-
-      const rect = viewportElement.getBoundingClientRect();
-      const centerPoint = center ?? {
-        x: rect.width / 2,
-        y: rect.height / 2,
-      };
-      const canvasX = (centerPoint.x - current.pan.x) / current.scale;
-      const canvasY = (centerPoint.y - current.pan.y) / current.scale;
-      return {
-        pan: {
-          x: centerPoint.x - canvasX * scale,
-          y: centerPoint.y - canvasY * scale,
-        },
-        scale,
-      };
-    });
-  }
-
-  function handleNodePointerDown(
-    event: ReactPointerEvent<HTMLElement>,
-    node: FlowNode,
-  ) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
-    const nextSelectedNodeIds = selectedNodeIdSet.has(node.id)
-      ? selectedNodeIds
-      : additive
-        ? [...selectedNodeIds, node.id]
-        : [node.id];
-    onSelectedNodesChange(nextSelectedNodeIds, node.id);
-    const startPositions = Object.fromEntries(
-      graph.nodes
-        .filter((item) => nextSelectedNodeIds.includes(item.id))
-        .map((item) => [item.id, item.position]),
-    );
-    dragRef.current = {
-      nodeIds: nextSelectedNodeIds,
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startPositions,
-      lastPositions: startPositions,
-    };
-    setDraggingNodeIds(nextSelectedNodeIds);
-  }
-
-  function handleConnectionPointerDown(
-    event: ReactPointerEvent<HTMLElement>,
-    node: FlowNode,
-  ) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const start = getNodeOutputPoint(node);
-    const current = clientPointToCanvasPoint(event);
-    const draft = {
-      pointerId: event.pointerId,
-      sourceNodeId: node.id,
-      start,
-      current,
-      targetNodeId: "",
-    };
-    connectionRef.current = draft;
-    setConnectionDraft({
-      sourceNodeId: draft.sourceNodeId,
-      start,
-      current,
-      targetNodeId: "",
-    });
-  }
-
-  function handleConnectionPointerMove(event: ReactPointerEvent<HTMLElement>) {
-    const connection = connectionRef.current;
-    if (!connection || connection.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const current = clientPointToCanvasPoint(event);
-    const targetNode = getNodeAtCanvasPoint(current, connection.sourceNodeId);
-    const next = {
-      ...connection,
-      current,
-      targetNodeId: targetNode?.id ?? "",
-    };
-    connectionRef.current = next;
-    setConnectionDraft({
-      sourceNodeId: next.sourceNodeId,
-      start: next.start,
-      current: next.current,
-      targetNodeId: next.targetNodeId,
-    });
-  }
-
-  function finishConnectionDrag(event: ReactPointerEvent<HTMLElement>) {
-    const connection = connectionRef.current;
-    if (!connection || connection.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    connectionRef.current = null;
-    setConnectionDraft(null);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    if (!connection.targetNodeId) return;
-    onConnectNodePair({
-      sourceNodeId: connection.sourceNodeId,
-      targetNodeId: connection.targetNodeId,
-    });
-  }
-
-  function handleNodePointerMove(event: ReactPointerEvent<HTMLElement>) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    const deltaX = (event.clientX - drag.startClientX) / viewport.scale;
-    const deltaY = (event.clientY - drag.startClientY) / viewport.scale;
-    const patches = drag.nodeIds.flatMap((nodeId) => {
-      const startPosition = drag.startPositions[nodeId];
-      if (!startPosition) return [];
-      return [
-        {
-          nodeId,
-          position: clampNodePosition({
-            x: startPosition.x + deltaX,
-            y: startPosition.y + deltaY,
-          }),
-        },
-      ];
-    });
-    drag.lastPositions = Object.fromEntries(
-      patches.map((patch) => [patch.nodeId, patch.position]),
-    );
-    onPreviewNodePositions(patches);
-  }
-
-  function finishNodeDrag(event: ReactPointerEvent<HTMLElement>) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    setDraggingNodeIds([]);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    onCommitNodePositions(
-      drag.nodeIds.flatMap((nodeId) => {
-        const position = drag.lastPositions[nodeId] ?? drag.startPositions[nodeId];
-        return position ? [{ nodeId, position }] : [];
+  const nextCanvasNodes = useMemo(
+    () =>
+      graph.nodes.map((node) =>
+        toFlowCanvasNode({
+          node,
+          nodeRun: activeRun?.nodeRuns.find((run) => run.nodeId === node.id),
+        }),
+      ),
+    [activeRun, graph.nodes],
+  );
+  const nextCanvasEdges = useMemo(
+    () =>
+      graph.edges.map((edge) =>
+        toFlowCanvasEdge({
+          edge,
+        }),
+      ),
+    [graph.edges],
+  );
+  const canvasSyncKey = useMemo(
+    () =>
+      JSON.stringify({
+        nodes: graph.nodes.map((node) => ({
+          id: node.id,
+          title: node.title,
+          type: node.type,
+          x: node.position.x,
+          y: node.position.y,
+          updatedAt: node.updatedAt,
+          runStatus:
+            activeRun?.nodeRuns.find((run) => run.nodeId === node.id)?.status ??
+            null,
+        })),
+        edges: graph.edges.map((edge) => ({
+          id: edge.id,
+          source: edge.sourceNodeId,
+          target: edge.targetNodeId,
+          condition: edge.condition,
+          updatedAt: edge.updatedAt,
+        })),
       }),
-    );
-  }
+    [activeRun, graph.edges, graph.nodes],
+  );
+  const handleSelectionChange: OnSelectionChangeFunc<
+    FlowCanvasNode,
+    FlowCanvasEdge
+  > = useCallback(
+    ({ nodes, edges }) => {
+      if (nodes.length > 0) {
+        const nodeIds = nodes.map((node) => node.id);
+        if (
+          selectedEdgeId === "" &&
+          arraysEqual(nodeIds, selectedNodeIds) &&
+          selectedNodeId === nodeIds[nodeIds.length - 1]
+        ) {
+          return;
+        }
+        onSelectedNodesChange(nodeIds, nodeIds[nodeIds.length - 1]);
+        return;
+      }
+      if (edges[0]) {
+        if (selectedEdgeId === edges[0].id) return;
+        onSelectedEdgeChange(edges[0].id);
+        return;
+      }
+      if (selectedEdgeId === "" && selectedNodeIds.length === 0) return;
+      onSelectedNodesChange([], undefined);
+      onSelectedEdgeChange("");
+    },
+    [
+      onSelectedEdgeChange,
+      onSelectedNodesChange,
+      selectedEdgeId,
+      selectedNodeId,
+      selectedNodeIds,
+    ],
+  );
 
-  function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    const target = event.target;
-    if (
-      target instanceof Element &&
-      target.closest(
-        "[data-flow-node],[data-flow-edge],[data-flow-minimap],[data-flow-port],button,input,select,textarea",
-      )
-    ) {
-      return;
-    }
+  const handleConnect: OnConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.target) return;
+      onConnectNodePair({
+        sourceNodeId: connection.source,
+        targetNodeId: connection.target,
+      });
+    },
+    [onConnectNodePair],
+  );
 
-    event.currentTarget.setPointerCapture(event.pointerId);
-    if (event.shiftKey || event.metaKey || event.ctrlKey) {
-      const start = clientPointToCanvasPoint(event);
-      selectionRef.current = {
-        pointerId: event.pointerId,
-        additive: event.metaKey || event.ctrlKey,
-        start,
-        current: start,
-      };
-      setSelectionBox(normalizeSelectionBox(start, start));
-      return;
-    }
+  const commitDraggedNodePositions = useCallback(
+    (nodes: FlowCanvasNode[]) => {
+      const patches = nodes.map((node) => ({
+        nodeId: node.id,
+        position: {
+          x: Math.round(node.position.x),
+          y: Math.round(node.position.y),
+        },
+      }));
+      if (patches.length > 0) {
+        onPreviewNodePositions(patches);
+        onCommitNodePositions(patches);
+      }
+    },
+    [onCommitNodePositions, onPreviewNodePositions],
+  );
 
-    panRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startPan: viewport.pan,
-    };
-    setPanning(true);
-  }
+  const handleNodeDragStop: OnNodeDrag<FlowCanvasNode> = useCallback(
+    (_event, node, nodes) => {
+      commitDraggedNodePositions(nodes.length > 0 ? nodes : [node]);
+    },
+    [commitDraggedNodePositions],
+  );
 
-  function handleCanvasPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (connectionRef.current?.pointerId === event.pointerId) {
-      handleConnectionPointerMove(event);
-      return;
-    }
-
-    if (dragRef.current?.pointerId === event.pointerId) {
-      handleNodePointerMove(event);
-      return;
-    }
-
-    const selection = selectionRef.current;
-    if (selection && selection.pointerId === event.pointerId) {
-      const current = clientPointToCanvasPoint(event);
-      selection.current = current;
-      setSelectionBox(normalizeSelectionBox(selection.start, current));
-      return;
-    }
-
-    const pan = panRef.current;
-    if (!pan || pan.pointerId !== event.pointerId) return;
-    setViewport((current) => ({
-      ...current,
-      pan: {
-        x: pan.startPan.x + event.clientX - pan.startClientX,
-        y: pan.startPan.y + event.clientY - pan.startClientY,
+  const handleSelectionDragStop: SelectionDragHandler<FlowCanvasNode> =
+    useCallback(
+      (_event, nodes) => {
+        commitDraggedNodePositions(nodes);
       },
-    }));
-  }
-
-  function finishCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
-    if (connectionRef.current?.pointerId === event.pointerId) {
-      finishConnectionDrag(event);
-      return;
-    }
-
-    if (dragRef.current?.pointerId === event.pointerId) {
-      finishNodeDrag(event);
-      return;
-    }
-
-    const selection = selectionRef.current;
-    if (selection && selection.pointerId === event.pointerId) {
-      const box = normalizeSelectionBox(selection.start, selection.current);
-      const selectedIds =
-        box.width < 4 && box.height < 4 ? [] : getNodeIdsInsideBox(box);
-      const nextSelectedIds = selection.additive
-        ? Array.from(new Set([...selectedNodeIds, ...selectedIds]))
-        : selectedIds;
-      onSelectedNodesChange(nextSelectedIds, nextSelectedIds[0]);
-      selectionRef.current = null;
-      setSelectionBox(null);
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      return;
-    }
-
-    const pan = panRef.current;
-    if (!pan || pan.pointerId !== event.pointerId) return;
-    panRef.current = null;
-    setPanning(false);
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  }
-
-  function handleCanvasWheel(event: ReactWheelEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const nextScale = viewport.scale * (event.deltaY > 0 ? 0.9 : 1.1);
-    updateZoom(nextScale, {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
-    });
-  }
-
-  useEffect(() => {
-    const viewportElement = viewportRef.current;
-    if (!viewportElement) return;
-    const element = viewportElement;
-
-    function updateViewportSize() {
-      const rect = element.getBoundingClientRect();
-      setViewportSize({ width: rect.width, height: rect.height });
-    }
-
-    updateViewportSize();
-    const observer = new ResizeObserver(updateViewportSize);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+      [commitDraggedNodePositions],
+    );
 
   return (
-    <div className="grid min-h-0 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid min-h-0 gap-4 overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="flex min-h-0 flex-col overflow-hidden">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -1177,31 +913,6 @@ function FlowEditor({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex h-9 items-center overflow-hidden rounded-md border border-slate-300 bg-white">
-            <button
-              type="button"
-              onClick={() => updateZoom(viewport.scale - 0.1)}
-              className="h-full w-9 border-r border-slate-200 font-mono text-sm text-slate-700 hover:bg-slate-50"
-              aria-label="Zoom out"
-            >
-              -
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewport({ pan: { x: 0, y: 0 }, scale: 1 })}
-              className="h-full w-16 border-r border-slate-200 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-600 hover:bg-slate-50"
-            >
-              {Math.round(viewport.scale * 100)}%
-            </button>
-            <button
-              type="button"
-              onClick={() => updateZoom(viewport.scale + 0.1)}
-              className="h-full w-9 font-mono text-sm text-slate-700 hover:bg-slate-50"
-              aria-label="Zoom in"
-            >
-              +
-            </button>
-          </div>
           <select
             value={nodeType}
             onChange={(event) =>
@@ -1275,147 +986,64 @@ function FlowEditor({
       </div>
 
       <div
-        ref={viewportRef}
         data-flow-canvas-viewport
-        onPointerDown={handleCanvasPointerDown}
-        onPointerMove={handleCanvasPointerMove}
-        onPointerUp={finishCanvasPan}
-        onPointerCancel={finishCanvasPan}
-        onWheel={handleCanvasWheel}
-        className={[
-          "relative min-h-0 flex-1 touch-none overflow-hidden rounded-md border border-slate-300 bg-[linear-gradient(#e2e8f0_1px,transparent_1px),linear-gradient(90deg,#e2e8f0_1px,transparent_1px)]",
-          panning ? "cursor-grabbing" : "cursor-grab",
-        ].join(" ")}
-        style={{
-          backgroundPosition: `${viewport.pan.x}px ${viewport.pan.y}px`,
-          backgroundSize: `${GRID_SIZE * viewport.scale}px ${GRID_SIZE * viewport.scale}px`,
-        }}
+        className="relative h-[min(62vh,720px)] min-h-[420px] overflow-hidden rounded-md border border-slate-300 bg-slate-50"
       >
-        <div
-          className="relative"
-          style={{
-            width: CANVAS_WIDTH,
-            height: CANVAS_HEIGHT,
-            transform: `translate(${viewport.pan.x}px, ${viewport.pan.y}px) scale(${viewport.scale})`,
-            transformOrigin: "0 0",
-          }}
-        >
-          <svg className="pointer-events-none absolute inset-0 h-full w-full">
-            <defs>
-              <marker
-                id="flow-edge-arrow"
-                viewBox="0 0 10 10"
-                refX="8"
-                refY="5"
-                markerWidth="6"
-                markerHeight="6"
-                orient="auto-start-reverse"
-              >
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f172a" />
-              </marker>
-              <marker
-                id="flow-edge-arrow-selected"
-                viewBox="0 0 10 10"
-                refX="8"
-                refY="5"
-                markerWidth="6"
-                markerHeight="6"
-                orient="auto-start-reverse"
-              >
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="#047857" />
-              </marker>
-            </defs>
-            {graph.edges.map((edge) => {
-              const source = graph.nodes.find((node) => node.id === edge.sourceNodeId);
-              const target = graph.nodes.find((node) => node.id === edge.targetNodeId);
-              if (!source || !target) return null;
-              const selected = edge.id === selectedEdge?.id;
-              const edgePath = buildEdgePath(
-                getNodeOutputPoint(source),
-                getNodeInputPoint(target),
-              );
-              return (
-                <g
-                  key={edge.id}
-                  data-flow-edge
-                  className="pointer-events-auto cursor-pointer"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelectedEdgeChange(edge.id);
-                  }}
-                >
-                  <path
-                    d={edgePath}
-                    stroke="transparent"
-                    strokeWidth="16"
-                    fill="none"
-                  />
-                  <path
-                    d={edgePath}
-                    stroke={selected ? "#047857" : "#0f172a"}
-                    strokeWidth={selected ? "3" : "2"}
-                    strokeDasharray={edge.condition ? "4 4" : undefined}
-                    markerEnd={
-                      selected
-                        ? "url(#flow-edge-arrow-selected)"
-                        : "url(#flow-edge-arrow)"
-                    }
-                    fill="none"
-                  />
-                </g>
-              );
-            })}
-            {connectionDraft && (
-              <path
-                d={buildEdgePath(connectionDraft.start, connectionDraft.current)}
-                stroke={connectionDraft.targetNodeId ? "#047857" : "#64748b"}
-                strokeWidth="2.5"
-                strokeDasharray="6 5"
-                fill="none"
-              />
-            )}
-          </svg>
-          {selectionBox && (
-            <div
-              className="pointer-events-none absolute rounded-sm border border-emerald-700 bg-emerald-500/10"
-              style={{
-                left: selectionBox.x,
-                top: selectionBox.y,
-                width: selectionBox.width,
-                height: selectionBox.height,
-              }}
+        <ReactFlowProvider>
+          <ReactFlow
+            key={canvasSyncKey}
+            defaultNodes={nextCanvasNodes}
+            defaultEdges={nextCanvasEdges}
+            nodeTypes={nodeTypes}
+            onSelectionChange={handleSelectionChange}
+            onConnect={handleConnect}
+            onNodeDoubleClick={(_event, node) => setDetailNodeId(node.id)}
+            onEdgeClick={(_event, edge) => onSelectedEdgeChange(edge.id)}
+            onNodeDragStop={handleNodeDragStop}
+            onSelectionDragStop={handleSelectionDragStop}
+            connectionMode={ConnectionMode.Loose}
+            fitView
+            fitViewOptions={{ padding: 0.22 }}
+            minZoom={0.35}
+            maxZoom={1.8}
+            nodeExtent={FLOW_EXTENT}
+            translateExtent={FLOW_EXTENT}
+            selectNodesOnDrag={false}
+            selectionOnDrag
+            selectionMode={SelectionMode.Partial}
+            panOnDrag={[1, 2]}
+            deleteKeyCode={null}
+            multiSelectionKeyCode={["Meta", "Control", "Shift"]}
+            defaultEdgeOptions={{
+              type: "smoothstep",
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: "#0f172a",
+              },
+            }}
+            className="flow-canvas"
+          >
+            <Background
+              color="#cbd5e1"
+              gap={32}
+              size={1}
+              variant={BackgroundVariant.Lines}
             />
-          )}
-          {graph.nodes.map((node) => (
-            <FlowNodeCard
-              key={node.id}
-              node={node}
-              selected={selectedNodeIdSet.has(node.id)}
-              dragging={draggingNodeIds.includes(node.id)}
-              connectionTarget={connectionDraft?.targetNodeId === node.id}
-              nodeRun={activeRun?.nodeRuns.find((run) => run.nodeId === node.id)}
-              onOpenDetail={() => setDetailNodeId(node.id)}
-              onPointerDown={(event) => handleNodePointerDown(event, node)}
-              onPointerMove={handleNodePointerMove}
-              onPointerUp={finishNodeDrag}
-              onPointerCancel={finishNodeDrag}
-              onStartConnection={(event) =>
-                handleConnectionPointerDown(event, node)
+            <Controls position="top-left" showInteractive={false} />
+            <MiniMap
+              position="bottom-right"
+              pannable
+              zoomable
+              nodeBorderRadius={4}
+              nodeStrokeWidth={2}
+              nodeColor={(node) => (node.selected ? "#d1fae5" : "#ffffff")}
+              nodeStrokeColor={(node) =>
+                node.selected ? "#047857" : "#0f172a"
               }
-              onMoveConnection={handleConnectionPointerMove}
-              onFinishConnection={finishConnectionDrag}
+              maskColor="rgba(15, 23, 42, 0.08)"
             />
-          ))}
-        </div>
-        <FlowMiniMap
-          nodes={graph.nodes}
-          edges={graph.edges}
-          selectedNodeIds={selectedNodeIds}
-          selectedEdgeId={selectedEdge?.id ?? ""}
-          viewport={viewport}
-          viewportSize={viewportSize}
-          onViewportChange={setViewport}
-        />
+          </ReactFlow>
+        </ReactFlowProvider>
       </div>
       </div>
 
@@ -1456,66 +1084,45 @@ function FlowEditor({
   );
 }
 
-function FlowNodeCard({
-  node,
-  selected,
-  dragging,
-  connectionTarget,
-  nodeRun,
-  onOpenDetail,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onPointerCancel,
-  onStartConnection,
-  onMoveConnection,
-  onFinishConnection,
-}: {
-  node: FlowNode;
-  selected: boolean;
-  dragging: boolean;
-  connectionTarget: boolean;
-  nodeRun?: FlowNodeRun;
-  onOpenDetail: () => void;
-  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
-  onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
-  onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
-  onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
-  onStartConnection: (event: ReactPointerEvent<HTMLElement>) => void;
-  onMoveConnection: (event: ReactPointerEvent<HTMLElement>) => void;
-  onFinishConnection: (event: ReactPointerEvent<HTMLElement>) => void;
-}) {
+function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
+  const { node, nodeRun } = data;
   return (
     <div
-      role="button"
-      tabIndex={0}
       data-flow-node
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
-      onDoubleClick={onOpenDetail}
       className={[
-        "absolute w-48 touch-none rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
-        dragging ? "cursor-grabbing shadow-md" : "cursor-grab",
-        connectionTarget
-          ? "border-emerald-700 ring-4 ring-emerald-100"
-          : selected
+        "w-48 rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
+        selected
           ? "border-emerald-700 ring-2 ring-emerald-100"
           : "border-slate-900",
       ].join(" ")}
-      style={{ left: node.position.x, top: node.position.y }}
     >
-      <div className="pointer-events-none absolute left-[-5px] top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border border-slate-900 bg-white" />
-      <button
-        type="button"
-        data-flow-port="output"
-        aria-label={`Connect from ${node.title}`}
-        onPointerDown={onStartConnection}
-        onPointerMove={onMoveConnection}
-        onPointerUp={onFinishConnection}
-        onPointerCancel={onFinishConnection}
-        className="absolute right-[-7px] top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-emerald-700 bg-white shadow-sm hover:bg-emerald-50"
+      {node.type !== "start" && (
+        <Handle
+          id="in"
+          type="target"
+          position={Position.Left}
+          className="!h-3 !w-3 !border-slate-900 !bg-white"
+        />
+      )}
+      {node.type !== "end" && (
+        <Handle
+          id="out"
+          type="source"
+          position={Position.Right}
+          className="!h-4 !w-4 !border-emerald-700 !bg-white hover:!bg-emerald-50"
+        />
+      )}
+      <div
+        className={[
+          "absolute inset-y-2 left-0 w-1 rounded-r",
+          node.type === "prompt"
+            ? "bg-emerald-600"
+            : node.type === "condition"
+              ? "bg-amber-500"
+              : node.type === "transform"
+                ? "bg-sky-600"
+                : "bg-slate-600",
+        ].join(" ")}
       />
       <div className="flex items-center justify-between gap-2">
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
@@ -1543,153 +1150,49 @@ function FlowNodeCard({
   );
 }
 
-function FlowMiniMap({
-  nodes,
-  edges,
-  selectedNodeIds,
-  selectedEdgeId,
-  viewport,
-  viewportSize,
-  onViewportChange,
+function toFlowCanvasNode({
+  node,
+  nodeRun,
 }: {
-  nodes: FlowNode[];
-  edges: FlowEdge[];
-  selectedNodeIds: string[];
-  selectedEdgeId: string;
-  viewport: { pan: { x: number; y: number }; scale: number };
-  viewportSize: { width: number; height: number };
-  onViewportChange: (viewport: {
-    pan: { x: number; y: number };
-    scale: number;
-  }) => void;
-}) {
-  const miniMapRef = useRef<HTMLButtonElement | null>(null);
-  const selectedNodeIdSet = useMemo(
-    () => new Set(selectedNodeIds),
-    [selectedNodeIds],
-  );
-  const scaleX = MINIMAP_WIDTH / CANVAS_WIDTH;
-  const scaleY = MINIMAP_HEIGHT / CANVAS_HEIGHT;
-  const viewportRect = {
-    x: clamp(-viewport.pan.x / viewport.scale, 0, CANVAS_WIDTH),
-    y: clamp(-viewport.pan.y / viewport.scale, 0, CANVAS_HEIGHT),
-    width: clamp(viewportSize.width / viewport.scale, 0, CANVAS_WIDTH),
-    height: clamp(viewportSize.height / viewport.scale, 0, CANVAS_HEIGHT),
+  node: FlowNode;
+  nodeRun?: FlowNodeRun;
+}): FlowCanvasNode {
+  return {
+    id: node.id,
+    type: "flowNode",
+    position: node.position,
+    data: { node, nodeRun },
+    width: NODE_WIDTH,
+    draggable: true,
+    connectable: true,
+    selectable: true,
   };
+}
 
-  function centerViewportAt(event: ReactPointerEvent<HTMLButtonElement>) {
-    const miniMap = miniMapRef.current;
-    if (!miniMap || viewportSize.width <= 0 || viewportSize.height <= 0) {
-      return;
-    }
-
-    const rect = miniMap.getBoundingClientRect();
-    const canvasX = clamp(
-      ((event.clientX - rect.left) / rect.width) * CANVAS_WIDTH,
-      0,
-      CANVAS_WIDTH,
-    );
-    const canvasY = clamp(
-      ((event.clientY - rect.top) / rect.height) * CANVAS_HEIGHT,
-      0,
-      CANVAS_HEIGHT,
-    );
-
-    onViewportChange({
-      scale: viewport.scale,
-      pan: {
-        x: viewportSize.width / 2 - canvasX * viewport.scale,
-        y: viewportSize.height / 2 - canvasY * viewport.scale,
-      },
-    });
-  }
-
-  function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    centerViewportAt(event);
-  }
-
-  function handlePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-    event.preventDefault();
-    centerViewportAt(event);
-  }
-
-  function handlePointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  }
-
-  return (
-    <button
-      ref={miniMapRef}
-      type="button"
-      data-flow-minimap
-      aria-label="Mini map"
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-      className="absolute bottom-3 right-3 z-20 overflow-hidden rounded-md border border-slate-300 bg-white/95 p-2 text-left shadow-sm backdrop-blur"
-      style={{ width: MINIMAP_WIDTH + 18, height: MINIMAP_HEIGHT + 18 }}
-    >
-      <svg
-        width={MINIMAP_WIDTH}
-        height={MINIMAP_HEIGHT}
-        viewBox={`0 0 ${MINIMAP_WIDTH} ${MINIMAP_HEIGHT}`}
-        className="block"
-      >
-        <rect
-          x="0"
-          y="0"
-          width={MINIMAP_WIDTH}
-          height={MINIMAP_HEIGHT}
-          fill="#f8fafc"
-        />
-        {edges.map((edge) => {
-          const source = nodes.find((node) => node.id === edge.sourceNodeId);
-          const target = nodes.find((node) => node.id === edge.targetNodeId);
-          if (!source || !target) return null;
-          return (
-            <line
-              key={edge.id}
-              x1={(source.position.x + NODE_WIDTH / 2) * scaleX}
-              y1={(source.position.y + NODE_HEIGHT / 2) * scaleY}
-              x2={(target.position.x + NODE_WIDTH / 2) * scaleX}
-              y2={(target.position.y + NODE_HEIGHT / 2) * scaleY}
-              stroke={edge.id === selectedEdgeId ? "#047857" : "#64748b"}
-              strokeWidth={edge.id === selectedEdgeId ? 1.5 : 1}
-              strokeDasharray={edge.condition ? "2 2" : undefined}
-            />
-          );
-        })}
-        {nodes.map((node) => (
-          <rect
-            key={node.id}
-            x={node.position.x * scaleX}
-            y={node.position.y * scaleY}
-            width={NODE_WIDTH * scaleX}
-            height={NODE_HEIGHT * scaleY}
-            rx="1.5"
-            fill={selectedNodeIdSet.has(node.id) ? "#d1fae5" : "#ffffff"}
-            stroke={selectedNodeIdSet.has(node.id) ? "#047857" : "#0f172a"}
-            strokeWidth={selectedNodeIdSet.has(node.id) ? 1.4 : 0.8}
-          />
-        ))}
-        <rect
-          x={viewportRect.x * scaleX}
-          y={viewportRect.y * scaleY}
-          width={viewportRect.width * scaleX}
-          height={viewportRect.height * scaleY}
-          fill="rgba(4, 120, 87, 0.1)"
-          stroke="#047857"
-          strokeWidth="1.5"
-        />
-      </svg>
-    </button>
-  );
+function toFlowCanvasEdge({
+  edge,
+}: {
+  edge: FlowEdge;
+}): FlowCanvasEdge {
+  const color = "#0f172a";
+  return {
+    id: edge.id,
+    type: "smoothstep",
+    source: edge.sourceNodeId,
+    sourceHandle: "out",
+    target: edge.targetNodeId,
+    targetHandle: "in",
+    data: { edge },
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color,
+    },
+    style: {
+      stroke: color,
+      strokeWidth: 2,
+      strokeDasharray: edge.condition ? "5 5" : undefined,
+    },
+  };
 }
 
 function FlowInspector({
@@ -2515,19 +2018,8 @@ function parseJsonDraft(value: string): unknown {
   }
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-function buildEdgePath(source: CanvasPoint, target: CanvasPoint): string {
-  const distance = Math.abs(target.x - source.x);
-  const curve = clamp(distance * 0.5, 80, 220);
-  return [
-    `M ${source.x} ${source.y}`,
-    `C ${source.x + curve} ${source.y}`,
-    `${target.x - curve} ${target.y}`,
-    `${target.x} ${target.y}`,
-  ].join(" ");
+function arraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function messageToText(message: UIMessage): string {

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "@xyflow/react/dist/style.css";
 import "streamdown/styles.css";
 import "./globals.css";
 
