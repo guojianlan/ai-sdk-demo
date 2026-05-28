@@ -83,7 +83,10 @@ type NodePositionPatch = {
 type FlowCanvasNodeData = {
   node: FlowNode;
   nodeRun?: FlowNodeRun;
+  runState: FlowNodeVisualState;
 };
+
+type FlowNodeVisualState = "idle" | "pending" | "active" | "done" | "failed" | "skipped";
 
 type FlowCanvasNode = Node<FlowCanvasNodeData, "flowNode">;
 
@@ -206,6 +209,38 @@ export function FlowWorkspace({
       cancelled = true;
     };
   }, [activeFlowId]);
+
+  useEffect(() => {
+    if (!activeFlowId || activeRun?.run.status !== "running") return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const detail = await fetchFlowRunDetail({
+          flowId: activeFlowId,
+          runId: activeRun.run.id,
+        });
+        if (cancelled) return;
+        setActiveRun(detail);
+        setRuns((current) =>
+          current.map((run) => (run.id === detail.run.id ? detail.run : run)),
+        );
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error ? loadError.message : "运行详情加载失败",
+          );
+        }
+      }
+    };
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 1_000);
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeFlowId, activeRun?.run.id, activeRun?.run.status]);
 
   async function handleCreateFlow() {
     if (!selectedWorkspace) return;
@@ -873,15 +908,18 @@ function FlowEditor({
     ? activeRun?.nodeRuns.find((run) => run.nodeId === detailNode.id) ?? null
     : null;
   const nodeTypes = useMemo(() => FLOW_NODE_TYPES, []);
+  const flowRunning = running || activeRun?.run.status === "running";
 
   const nextCanvasNodes = useMemo(
     () =>
-      graph.nodes.map((node) =>
-        toFlowCanvasNode({
+      graph.nodes.map((node) => {
+        const nodeRun = activeRun?.nodeRuns.find((run) => run.nodeId === node.id);
+        return toFlowCanvasNode({
           node,
-          nodeRun: activeRun?.nodeRuns.find((run) => run.nodeId === node.id),
-        }),
-      ),
+          nodeRun,
+          runState: getNodeVisualState(nodeRun, activeRun?.run.status ?? null),
+        });
+      }),
     [activeRun, graph.nodes],
   );
   const nextCanvasEdges = useMemo(
@@ -1027,10 +1065,10 @@ function FlowEditor({
           <button
             type="button"
             onClick={onRunFlow}
-            disabled={running}
+            disabled={flowRunning}
             className="h-9 rounded-md border border-emerald-700 bg-emerald-700 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
           >
-            {running ? "运行中" : "运行"}
+            {flowRunning ? "运行中" : "运行"}
           </button>
           <button
             type="button"
@@ -1155,7 +1193,7 @@ function FlowEditor({
         runs={runs}
         flow={graph.flow}
         inputDraft={inputDraft}
-        running={running}
+        running={flowRunning}
         savingFlow={savingFlow}
         savingNode={savingNode}
         savingEdge={savingEdge}
@@ -1183,15 +1221,16 @@ function FlowEditor({
 }
 
 function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
-  const { node, nodeRun } = data;
+  const { node, nodeRun, runState } = data;
+  const active = runState === "active";
   return (
     <div
       data-flow-node
       className={[
         "w-48 rounded-md border bg-white px-3 py-3 text-left shadow-sm transition-colors",
-        selected
-          ? "border-emerald-700 ring-2 ring-emerald-100"
-          : "border-slate-900",
+        active ? "border-emerald-700 ring-2 ring-emerald-200" : "",
+        selected && !active ? "border-emerald-700 ring-2 ring-emerald-100" : "",
+        !selected && !active ? "border-slate-900" : "",
       ].join(" ")}
     >
       {node.type !== "start" && (
@@ -1228,18 +1267,20 @@ function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
           {nodeTypeLabel(node.type)}
         </div>
-        {nodeRun && (
+        {runState !== "idle" && (
           <span
             className={[
               "rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em]",
-              nodeRun.status === "succeeded"
+              runState === "done"
                 ? "bg-emerald-50 text-emerald-700"
-                : nodeRun.status === "failed"
+                : runState === "failed"
                   ? "bg-rose-50 text-rose-700"
-                  : "bg-slate-100 text-slate-600",
+                  : runState === "active"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-slate-100 text-slate-600",
             ].join(" ")}
           >
-            {runStatusLabel(nodeRun.status)}
+            {nodeStateLabel(runState, nodeRun?.status ?? null)}
           </span>
         )}
       </div>
@@ -1253,15 +1294,17 @@ function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
 function toFlowCanvasNode({
   node,
   nodeRun,
+  runState,
 }: {
   node: FlowNode;
   nodeRun?: FlowNodeRun;
+  runState: FlowNodeVisualState;
 }): FlowCanvasNode {
   return {
     id: node.id,
     type: "flowNode",
     position: node.position,
-    data: { node, nodeRun },
+    data: { node, nodeRun, runState },
     width: NODE_WIDTH,
     draggable: true,
     connectable: true,
@@ -1348,6 +1391,7 @@ function FlowInspector({
   onDeleteEdge: (edgeId: string) => void;
   onOpenNodeDetail: (nodeId: string) => void;
 }) {
+  const [mode, setMode] = useState<"config" | "detail">("config");
   const selectedEdgeSource = selectedEdge
     ? nodes.find((node) => node.id === selectedEdge.sourceNodeId)
     : undefined;
@@ -1366,12 +1410,38 @@ function FlowInspector({
           onArchiveFlow={onArchiveFlow}
         />
 
+        <div className="grid grid-cols-2 gap-1 rounded-md border border-slate-200 bg-slate-50 p-1">
+          <button
+            type="button"
+            onClick={() => setMode("config")}
+            className={[
+              "h-8 rounded text-sm font-medium",
+              mode === "config" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+            ].join(" ")}
+          >
+            配置
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("detail")}
+            className={[
+              "h-8 rounded text-sm font-medium",
+              mode === "detail" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+            ].join(" ")}
+          >
+            运行详情
+          </button>
+        </div>
+
         <section className="rounded-md border border-slate-200 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
             <Eyebrow>运行输入</Eyebrow>
             <button
               type="button"
-              onClick={onRunFlow}
+              onClick={() => {
+                setMode("detail");
+                onRunFlow();
+              }}
               disabled={running}
               className="h-8 rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
             >
@@ -1393,7 +1463,10 @@ function FlowInspector({
               <button
                 key={run.id}
                 type="button"
-                onClick={() => onSelectRun(run.id)}
+                onClick={() => {
+                  setMode("detail");
+                  onSelectRun(run.id);
+                }}
                 className={[
                   "w-full rounded-md border px-2 py-2 text-left text-xs transition-colors",
                   activeRun?.run.id === run.id
@@ -1422,7 +1495,14 @@ function FlowInspector({
           </div>
         </section>
 
-        {selectedEdge && (
+        {mode === "detail" && (
+          <FlowRunDetailPanel
+            activeRun={activeRun}
+            nodes={nodes}
+          />
+        )}
+
+        {mode === "config" && selectedEdge && (
           <section className="rounded-md border border-slate-200 p-3">
             <div className="mb-3 flex items-center justify-between gap-2">
               <Eyebrow>连线配置</Eyebrow>
@@ -1454,6 +1534,7 @@ function FlowInspector({
           </section>
         )}
 
+        {mode === "config" && (
         <section className="rounded-md border border-slate-200 p-3">
           <div className="flex items-center justify-between gap-2">
             <Eyebrow>
@@ -1516,8 +1597,121 @@ function FlowInspector({
             <div className="mt-3 text-sm text-slate-500">选择一个节点</div>
           )}
         </section>
+        )}
       </div>
     </aside>
+  );
+}
+
+function FlowRunDetailPanel({
+  activeRun,
+  nodes,
+}: {
+  activeRun: FlowRunWithNodes | null;
+  nodes: FlowNode[];
+}) {
+  if (!activeRun) {
+    return (
+      <section className="rounded-md border border-dashed border-slate-300 px-3 py-5 text-center text-sm text-slate-500">
+        暂无可查看的运行详情
+      </section>
+    );
+  }
+
+  const nodeRunByNodeId = new Map(
+    activeRun.nodeRuns.map((nodeRun) => [nodeRun.nodeId, nodeRun]),
+  );
+
+  return (
+    <section className="rounded-md border border-slate-200 p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <Eyebrow>执行详情</Eyebrow>
+        <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+          {runStatusLabel(activeRun.run.status)}
+        </span>
+      </div>
+      <div className="space-y-3">
+        <JsonBlock
+          label="流程输入"
+          value={activeRun.run.input}
+          heightClassName="max-h-40"
+        />
+        <JsonBlock
+          label="流程输出"
+          value={activeRun.run.output ?? null}
+          heightClassName="max-h-40"
+        />
+        {activeRun.run.error && (
+          <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+            {activeRun.run.error}
+          </div>
+        )}
+        <div className="space-y-3">
+          {nodes.map((node) => {
+            const nodeRun = nodeRunByNodeId.get(node.id) ?? null;
+            const state = getNodeVisualState(nodeRun, activeRun.run.status);
+            return (
+              <div
+                key={node.id}
+                className="rounded-md border border-slate-200 bg-white p-3"
+              >
+                <div className="mb-2 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-slate-900">
+                      {node.title}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                      {nodeTypeLabel(node.type)}
+                    </div>
+                  </div>
+                  <span
+                    className={[
+                      "shrink-0 rounded px-2 py-1 text-xs font-medium",
+                      state === "done"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : state === "failed"
+                          ? "bg-rose-50 text-rose-700"
+                          : state === "active"
+                            ? "bg-emerald-600 text-white"
+                            : "bg-slate-100 text-slate-600",
+                    ].join(" ")}
+                  >
+                    {nodeStateLabel(state, nodeRun?.status ?? null)}
+                  </span>
+                </div>
+                {nodeRun ? (
+                  <div className="space-y-3">
+                    <JsonBlock
+                      label="节点输入"
+                      value={nodeRun.input}
+                      heightClassName="max-h-36"
+                    />
+                    <JsonBlock
+                      label="节点输出"
+                      value={nodeRun.output ?? null}
+                      heightClassName="max-h-36"
+                    />
+                    <TranscriptLoader
+                      key={nodeRun.transcriptThreadId ?? nodeRun.id}
+                      threadId={nodeRun.transcriptThreadId}
+                    />
+                    {nodeRun.error && (
+                      <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
+                        {nodeRun.error}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-500">
+                    {state === "pending" ? "等待上游节点完成" : "本次运行未执行"}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1707,10 +1901,15 @@ function TranscriptBlock({
           {messages.map((message) => (
             <div
               key={message.id}
-              className="rounded-md border border-slate-200 bg-white p-2"
+              className={[
+                "rounded-md border p-2",
+                message.role === "assistant"
+                  ? "border-emerald-100 bg-emerald-50/50"
+                  : "border-slate-200 bg-white",
+              ].join(" ")}
             >
               <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                {message.role}
+                {messageRoleLabel(message.role)}
               </div>
               <div className="whitespace-pre-wrap text-xs leading-5 text-slate-800">
                 {messageToText(message)}
@@ -2125,11 +2324,32 @@ function arraysEqual(left: string[], right: string[]): boolean {
 }
 
 function messageToText(message: UIMessage): string {
-  return message.parts
-    .filter((part) => part.type === "text")
-    .map((part) => (part as { text: string }).text)
+  const text = message.parts
+    .map(messagePartToText)
+    .filter(Boolean)
     .join("\n")
     .trim();
+  return text || "无可展示内容";
+}
+
+function messagePartToText(part: UIMessage["parts"][number]): string {
+  if (part.type === "text") {
+    return (part as { text: string }).text;
+  }
+  if (part.type === "reasoning") {
+    return "";
+  }
+  const maybe = part as Record<string, unknown>;
+  if (typeof maybe.type === "string" && maybe.type.startsWith("tool-")) {
+    return stableStringifyForUi({
+      type: maybe.type,
+      state: maybe.state,
+      input: maybe.input,
+      output: maybe.output,
+      errorText: maybe.errorText,
+    });
+  }
+  return stableStringifyForUi(maybe);
 }
 
 function parseConfigJson(value: string, label: string): unknown {
@@ -2301,5 +2521,49 @@ function runStatusLabel(status: FlowRun["status"] | null): string {
       return "已跳过";
     default:
       return "未运行";
+  }
+}
+
+function getNodeVisualState(
+  nodeRun: FlowNodeRun | null | undefined,
+  runStatus: FlowRun["status"] | null,
+): FlowNodeVisualState {
+  if (!runStatus) return "idle";
+  if (!nodeRun) {
+    return runStatus === "running" ? "pending" : "skipped";
+  }
+  if (nodeRun.status === "running" || nodeRun.status === "queued") {
+    return "active";
+  }
+  if (nodeRun.status === "succeeded") return "done";
+  if (nodeRun.status === "failed") return "failed";
+  if (nodeRun.status === "skipped") return "skipped";
+  return "pending";
+}
+
+function nodeStateLabel(
+  state: FlowNodeVisualState,
+  rawStatus: FlowRun["status"] | null,
+): string {
+  if (state === "active") return "active";
+  if (state === "done") return "done";
+  if (state === "pending") return "pending";
+  if (state === "failed") return "failed";
+  if (state === "skipped") return "skipped";
+  return rawStatus ? runStatusLabel(rawStatus) : "idle";
+}
+
+function messageRoleLabel(role: UIMessage["role"]): string {
+  if (role === "user") return "输入";
+  if (role === "assistant") return "Agent";
+  if (role === "system") return "系统";
+  return role;
+}
+
+function stableStringifyForUi(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
   }
 }

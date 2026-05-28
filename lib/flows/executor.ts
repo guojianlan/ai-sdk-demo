@@ -79,10 +79,27 @@ export async function executeFlow(params: {
     status: "running",
   });
 
+  return executeFlowRun({
+    flowId: params.flowId,
+    input: params.input,
+    runId: run.id,
+  });
+}
+
+export async function executeFlowRun(params: {
+  flowId: string;
+  input: unknown;
+  runId: string;
+}): Promise<FlowRunWithNodes> {
+  const graph = getFlowWithGraph(params.flowId);
+  if (!graph) {
+    throw new Error("Flow not found.");
+  }
+
   const startNode =
     graph.nodes.find((node) => node.type === "start") ?? graph.nodes[0];
   if (!startNode) {
-    const failed = updateFlowRun(run.id, {
+    const failed = updateFlowRun(params.runId, {
       status: "failed",
       error: "Flow has no nodes.",
       finishedAt: Date.now(),
@@ -133,7 +150,7 @@ export async function executeFlow(params: {
       const input = applyNodeInputMapping(node, rawInput);
 
       const nodeRun = createFlowNodeRun({
-        flowRunId: run.id,
+        flowRunId: params.runId,
         nodeId: node.id,
         input,
         status: "running",
@@ -142,7 +159,7 @@ export async function executeFlow(params: {
       try {
         const result = await executeNode(node, input, {
           flow: graph.flow,
-          flowRunId: run.id,
+          flowRunId: params.runId,
           nodeRunId: nodeRun.id,
         });
         updateFlowNodeRun(nodeRun.id, {
@@ -181,13 +198,13 @@ export async function executeFlow(params: {
     }
 
     const finalOutput = findFinalOutput(graph.nodes, outputByNode);
-    updateFlowRun(run.id, {
+    updateFlowRun(params.runId, {
       status: "succeeded",
       output: finalOutput,
       finishedAt: Date.now(),
     });
   } catch (error) {
-    updateFlowRun(run.id, {
+    updateFlowRun(params.runId, {
       status: "failed",
       error: error instanceof Error ? error.message : "Flow execution failed.",
       output: findFinalOutput(graph.nodes, outputByNode),
@@ -195,7 +212,7 @@ export async function executeFlow(params: {
     });
   }
 
-  const detail = getFlowRunWithNodes(run.id);
+  const detail = getFlowRunWithNodes(params.runId);
   if (!detail) {
     throw new Error("Flow run could not be loaded after execution.");
   }

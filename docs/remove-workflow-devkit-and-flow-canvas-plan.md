@@ -254,6 +254,29 @@ branches on content/line count, and generates an image should be built from
 agent nodes plus condition nodes. It should not be implemented by adding
 hard-coded file or image logic directly into the Flow executor.
 
+### 2026-05-28 UX Correction: Runs Are First-Class Records
+
+A Flow run must be visible immediately after the user clicks Run. The API should
+create a persisted run row, return it quickly, then execute the graph in the
+background while the UI polls `GET /api/flows/:flowId/runs/:runId`.
+
+Required behavior:
+
+- Every Run click creates one distinct flow run record.
+- The run list is clickable; selecting a run switches the side panel into run
+  detail mode.
+- The canvas derives node status from the selected run:
+  - no run selected: idle
+  - run active and node has not started: pending
+  - node run status `running`: active
+  - node run status `succeeded`: done
+  - node run status `failed`: failed
+  - completed run with no node run: skipped
+- Run detail mode shows the flow input/output, per-node input/output/error, and
+  the node transcript thread in a Chat-like timeline.
+- The transcript can show user prompts, assistant text, and tool call input/output.
+  It must not claim to expose hidden chain-of-thought reasoning.
+
 ## UX Shape
 
 ### App navigation

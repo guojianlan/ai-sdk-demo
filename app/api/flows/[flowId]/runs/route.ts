@@ -1,6 +1,11 @@
-import { executeFlow } from "@/lib/flows/executor";
+import { executeFlowRun } from "@/lib/flows/executor";
 import { requireGatewayApiKey } from "@/lib/env";
-import { listFlowRuns } from "@/lib/persistence";
+import {
+  createFlowRun,
+  getFlowRunWithNodes,
+  listFlowRuns,
+  updateFlowRun,
+} from "@/lib/persistence";
 
 export async function GET(
   _request: Request,
@@ -31,11 +36,25 @@ export async function POST(
 
   try {
     requireGatewayApiKey();
-    const run = await executeFlow({
+    const run = createFlowRun({
       flowId,
       input: body.inputJson ?? {},
+      status: "running",
     });
-    return Response.json(run, { status: 201 });
+    void executeFlowRun({
+      flowId,
+      input: body.inputJson ?? {},
+      runId: run.id,
+    }).catch((error) => {
+      updateFlowRun(run.id, {
+        status: "failed",
+        error: error instanceof Error ? error.message : "Unable to run flow",
+        finishedAt: Date.now(),
+      });
+    });
+
+    const detail = getFlowRunWithNodes(run.id);
+    return Response.json(detail, { status: 202 });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Unable to run flow" },
