@@ -116,8 +116,10 @@ export default function Home() {
     let cancelled = false;
     void (async () => {
       try {
-        if (typeof window !== "undefined") {
-          window.localStorage.removeItem(STORAGE_KEY);
+        try {
+          window.localStorage?.removeItem(STORAGE_KEY);
+        } catch {
+          // Legacy cleanup is best-effort; session loading must still continue.
         }
         const list = await fetchSessions();
         if (cancelled) return;
