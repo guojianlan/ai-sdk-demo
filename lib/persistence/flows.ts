@@ -13,7 +13,13 @@ export type FlowDefinition = {
   archivedAt: number | null;
 };
 
-export type FlowNodeType = "start" | "prompt" | "transform" | "condition" | "end";
+export type FlowNodeType =
+  | "start"
+  | "agent"
+  | "prompt"
+  | "transform"
+  | "condition"
+  | "end";
 
 export type FlowNode = {
   id: string;
@@ -851,6 +857,7 @@ function touchFlow(flowId: string, updatedAt: number) {
 function normalizeNodeType(type: string): FlowNodeType {
   if (
     type === "start" ||
+    type === "agent" ||
     type === "prompt" ||
     type === "transform" ||
     type === "condition" ||
@@ -879,6 +886,8 @@ function defaultNodeTitle(type: FlowNodeType): string {
   switch (type) {
     case "start":
       return "Start";
+    case "agent":
+      return "Agent";
     case "prompt":
       return "Prompt";
     case "transform":
@@ -891,9 +900,9 @@ function defaultNodeTitle(type: FlowNodeType): string {
 }
 
 function defaultNodeConfig(type: FlowNodeType): unknown {
-  if (type === "prompt") {
+  if (type === "agent" || type === "prompt") {
     return {
-      prompt: "Use the input JSON and return the next JSON object.",
+      prompt: "Use the workspace tools when needed, then return the next JSON object.",
       outputSchema: {
         type: "object",
         additionalProperties: true,
@@ -902,6 +911,7 @@ function defaultNodeConfig(type: FlowNodeType): unknown {
         maxAttempts: 3,
       },
       timeoutMs: 60_000,
+      permissionMode: "bypassPermissions",
     };
   }
   if (type === "condition") {

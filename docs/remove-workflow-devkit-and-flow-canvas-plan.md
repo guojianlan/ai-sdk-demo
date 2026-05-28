@@ -223,6 +223,37 @@ Add a new top-level tab for user-created flows:
 
 This should be our own product feature. Do not use Workflow DevKit for this.
 
+## 2026-05-28 Update: Flow Uses Chat As Its Execution Substrate
+
+The native Flow Canvas must not grow a second, weaker agent implementation.
+The runtime contract is now:
+
+- Flow is the orchestrator: it owns persisted flow definitions, nodes, edges, runs, node runs, branching, and run detail.
+- Chat is the execution substrate: agent-capable flow nodes call `runChatAgentLoop()` from `lib/chat-agent/run-loop.ts`.
+- Flow node execution defaults to `workspaceAccessMode: "workspace-tools"`, `shellApprovalPolicy: "never"`, `permissionMode: "bypassPermissions"`, and `planMode: false`.
+- Bypass still respects the existing permission system: ACL deny rules remain stronger than permission mode, and `allowBypassMode` / `disableBypassPermissionsMode` settings still gate auto-approval.
+- Each agent node creates an archived transcript thread with id `flow-node:<nodeRunId>`. The visible Flow UI can load that thread to inspect the node's prompt, tool work, and final output.
+- `prompt` nodes are kept for compatibility, but they now follow the same Chat-backed path as the new `agent` node type. They no longer call `generateText()` directly.
+- Structured output is parsed from the final assistant text. The node prompt instructs the agent to return final JSON after tool work is done; if parsing fails, the node output falls back to `{ "text": "..." }`.
+- Conditions now support `contains`, `gt`, `gte`, `lt`, and `lte` in addition to the previous equality/truthiness operators.
+- Image generation is a Chat tool named `image_generation`, not a Flow-only special case. It uses AI SDK `generateImage()` with `gateway.imageModel(env.gateway.imageModelId)`, saves the artifact under the selected workspace, and returns file metadata to the agent.
+
+This keeps the product model aligned with the desired canvas behavior:
+
+```text
+Flow Canvas
+  -> agent node
+  -> Chat agent loop
+  -> workspace tools / shell / write-edit / image_generation
+  -> final JSON output
+  -> downstream node input
+```
+
+Important implication: a sample flow that edits `README.md`, reads it back,
+branches on content/line count, and generates an image should be built from
+agent nodes plus condition nodes. It should not be implemented by adding
+hard-coded file or image logic directly into the Flow executor.
+
 ## UX Shape
 
 ### App navigation

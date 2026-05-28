@@ -19,6 +19,7 @@ import { askUserQuestionTool } from "./ask-user-question";
 import { editTool, writeTool } from "./write";
 import { globTool } from "./glob";
 import { grepTool } from "./grep";
+import { imageGenerationTool } from "./image-generation";
 import { memoryWriteTool } from "./memory-write";
 import { readTool } from "./read";
 import { shellTool } from "./shell";
@@ -34,6 +35,7 @@ export {
   editTool,
   globTool,
   grepTool,
+  imageGenerationTool,
   memoryWriteTool,
   readTool,
   shellTool,
@@ -58,6 +60,11 @@ export const workspaceToolset = {
 export const writeToolset = {
   write: writeTool,
   edit: editTool,
+} as const;
+
+/** 生成型媒体工具：调用配置的图像模型，并把结果落到 workspace artifact 目录。 */
+export const mediaToolset = {
+  image_generation: imageGenerationTool,
 } as const;
 
 /**

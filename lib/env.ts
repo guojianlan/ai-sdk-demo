@@ -47,6 +47,9 @@ const gatewayModelId =
   pickString(process.env.OPENAI_COMPAT_MODEL, process.env.GEMINI_MODEL) ??
   "gemini-2.5-flash";
 
+const gatewayImageModelId =
+  pickString(process.env.OPENAI_COMPAT_IMAGE_MODEL) ?? "gpt-image-1";
+
 /**
  * Reasoning effort（OpenAI gpt-5 系 / o1 系列等推理模型支持的
  * `reasoning_effort` 参数）。可选值：`minimal / low / medium / high`。
@@ -218,6 +221,7 @@ export const env = {
     baseURL: gatewayBaseURL,
     apiKey: gatewayApiKey,
     modelId: gatewayModelId,
+    imageModelId: gatewayImageModelId,
     /** 可选 reasoning_effort，值在 minimal/low/medium/high 之中，否则 undefined。 */
     reasoningEffort: gatewayReasoningEffort,
   },

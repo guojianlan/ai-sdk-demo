@@ -3,7 +3,14 @@ import {
   type FlowNodeType,
 } from "@/lib/persistence";
 
-const NODE_TYPES = new Set(["start", "prompt", "transform", "condition", "end"]);
+const NODE_TYPES = new Set([
+  "start",
+  "agent",
+  "prompt",
+  "transform",
+  "condition",
+  "end",
+]);
 
 export async function POST(
   request: Request,

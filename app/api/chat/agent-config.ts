@@ -20,6 +20,7 @@ import type { SkillMetadata } from "@/lib/skills";
 import {
   DEFAULT_SHELL_APPROVAL_POLICY,
   interactiveToolset,
+  mediaToolset,
   memoryToolset,
   planToolset,
   shellToolset,
@@ -223,6 +224,7 @@ export const projectEngineerCallOptionsSchema = z.object({
 export const projectEngineerStaticToolset = {
   ...workspaceToolset,
   ...writeToolset,
+  ...mediaToolset,
   ...shellToolset,
   ...subagentToolset,
   ...interactiveToolset,

@@ -1,17 +1,21 @@
 import { randomUUID } from "node:crypto";
 
 import type { UIMessage } from "ai";
-import { generateText, jsonSchema, Output } from "ai";
+import type { ChatUIMessageChunk } from "@/lib/chat-agent/active-runs";
 
-import { instrumentModel } from "@/lib/devtools";
+import { runChatAgentLoop } from "@/lib/chat-agent/run-loop";
 import { env } from "@/lib/env";
-import { gateway } from "@/lib/gateway";
+import {
+  normalizePermissionMode,
+  type PermissionMode,
+} from "@/lib/permissions";
 import {
   createFlowNodeRun,
   createFlowRun,
   getFlowRunWithNodes,
   getFlowWithGraph,
   archiveThread,
+  loadMessages,
   saveMessages,
   updateFlowNodeRun,
   updateFlowRun,
@@ -21,6 +25,7 @@ import {
   type FlowRunWithNodes,
   upsertThread,
 } from "@/lib/persistence";
+import { getSkills } from "@/lib/skills";
 
 const MAX_EXECUTED_NODES = 100;
 
@@ -31,6 +36,7 @@ type PromptNodeConfig = {
   inputPath?: unknown;
   retry?: unknown;
   timeoutMs?: unknown;
+  permissionMode?: unknown;
 };
 
 type GenericNodeConfig = {
@@ -49,6 +55,7 @@ type NormalizedPromptConfig = {
   outputSchema: Record<string, unknown> | null;
   retry: RetryConfig;
   timeoutMs: number | null;
+  permissionMode: PermissionMode;
 };
 
 type NodeExecutionResult = {
@@ -214,8 +221,8 @@ async function executeNode(
     };
   }
 
-  if (node.type === "prompt") {
-    return executePromptNode(node, input, context);
+  if (node.type === "agent" || node.type === "prompt") {
+    return executeAgentNode(node, input, context);
   }
 
   if (node.type === "end") {
@@ -293,7 +300,7 @@ function executeConditionNode(
   };
 }
 
-async function executePromptNode(
+async function executeAgentNode(
   node: FlowNode,
   input: unknown,
   context: {
@@ -310,68 +317,80 @@ async function executePromptNode(
   });
 
   const startedAt = Date.now();
-  const result = config.outputSchema
-    ? await generateText({
-        model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
-        output: Output.object({
-          schema: jsonSchema<Record<string, unknown>>(
-            config.outputSchema as Parameters<typeof jsonSchema>[0],
-          ),
-        }),
-        prompt: userPrompt,
-        maxRetries: Math.max(0, config.retry.maxAttempts - 1),
-        abortSignal: createTimeoutSignal(config.timeoutMs),
-      })
-    : await generateText({
-        model: instrumentModel(gateway.chatModel(env.gateway.modelId)),
-        output: Output.json(),
-        prompt: userPrompt,
-        maxRetries: Math.max(0, config.retry.maxAttempts - 1),
-        abortSignal: createTimeoutSignal(config.timeoutMs),
-      });
-
-  const transcriptThreadId = await savePromptNodeTranscript({
+  const transcriptThreadId = await createAgentNodeThread({
     flow: context.flow,
-    flowRunId: context.flowRunId,
     nodeRunId: context.nodeRunId,
     node,
-    userPrompt,
-    assistantText: result.text,
-    output: result.output,
   });
+  const userMessage: UIMessage = {
+    id: randomUUID(),
+    role: "user",
+    parts: [{ type: "text", text: userPrompt }],
+  };
+  await saveMessages(transcriptThreadId, [userMessage]);
+
+  const chunks: ChatUIMessageChunk[] = [];
+  const timeoutController = createTimeoutController(config.timeoutMs);
+  try {
+    await runChatAgentLoop({
+      runId: `flow-node-run:${context.nodeRunId}`,
+      writer: {
+        write(part) {
+          chunks.push(part);
+        },
+      },
+      abortSignal: timeoutController.signal,
+      options: {
+        chatId: transcriptThreadId,
+        agentMessages: [userMessage],
+        fullMessages: [userMessage],
+        compactionNotice: null,
+        workspaceRoot: context.flow.workspaceRoot,
+        workspaceName: context.flow.workspaceName ?? undefined,
+        workspaceAccessMode: "workspace-tools",
+        shellApprovalPolicy: "never",
+        permissionMode: config.permissionMode,
+        planMode: false,
+        conversationSummary: null,
+        skills: await getSkills(),
+        hookContexts: [],
+      },
+    });
+  } finally {
+    timeoutController.dispose();
+  }
+
+  const messages = loadMessages(transcriptThreadId);
+  const assistantMessage = findLastAssistantMessage(messages);
+  const assistantText = assistantMessage ? messageToText(assistantMessage) : "";
+  const output = parseAgentOutput(assistantText);
 
   return {
-    output: result.output,
+    output,
     transcriptThreadId,
     trace: {
-      kind: "prompt",
+      kind: "agent",
       model: env.gateway.modelId,
+      permissionMode: config.permissionMode,
+      shellApprovalPolicy: "never",
+      workspaceAccessMode: "workspace-tools",
       prompt: config.prompt,
       outputSchema: config.outputSchema,
       input,
-      text: result.text,
-      output: result.output,
-      finishReason: result.finishReason,
-      usage: result.totalUsage,
+      text: assistantText,
+      output,
       durationMs: Date.now() - startedAt,
       attemptsConfigured: config.retry.maxAttempts,
       timeoutMs: config.timeoutMs,
-      messages: [
-        { role: "user", content: userPrompt },
-        { role: "assistant", content: result.text },
-      ],
+      chunks: chunks.length,
     },
   };
 }
 
-async function savePromptNodeTranscript(params: {
+async function createAgentNodeThread(params: {
   flow: FlowDefinition;
-  flowRunId: string;
   nodeRunId: string;
   node: FlowNode;
-  userPrompt: string;
-  assistantText: string;
-  output: unknown;
 }): Promise<string> {
   const threadId = `flow-node:${params.nodeRunId}`;
   await upsertThread({
@@ -380,38 +399,12 @@ async function savePromptNodeTranscript(params: {
     workspaceName: params.flow.workspaceName ?? undefined,
     workspaceAccessMode: "workspace-tools",
     shellApprovalPolicy: "never",
-    permissionMode: "default",
+    permissionMode: "bypassPermissions",
     planMode: false,
     title: `${params.flow.title} / ${params.node.title}`,
     model: env.gateway.modelId,
   });
   archiveThread(threadId);
-
-  const messages: UIMessage[] = [
-    {
-      id: randomUUID(),
-      role: "user",
-      parts: [{ type: "text", text: params.userPrompt }],
-    },
-    {
-      id: randomUUID(),
-      role: "assistant",
-      parts: [
-        {
-          type: "text",
-          text: [
-            params.assistantText.trim(),
-            "",
-            "Output JSON:",
-            stableStringify(params.output),
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    },
-  ];
-  await saveMessages(threadId, messages);
   return threadId;
 }
 
@@ -474,6 +467,11 @@ function buildPromptText(params: {
   outputSchema: Record<string, unknown> | null;
 }): string {
   const parts = [
+    "You are executing a single node inside a workflow canvas.",
+    "Use the same workspace tools as the normal Chat agent when the node task needs files, shell commands, or other workspace actions.",
+    "Do not ask the user for confirmation during this node run. The workflow runner has already selected bypass permission mode for this execution.",
+    "",
+    "Node instruction:",
     params.prompt,
     "",
     "Input JSON:",
@@ -486,10 +484,12 @@ function buildPromptText(params: {
       "Output JSON schema:",
       stableStringify(params.outputSchema),
       "",
-      "Return only valid JSON that matches the output schema.",
+      "When all needed tool work is complete, return only valid JSON that matches the output schema.",
     );
   } else {
-    parts.push("Return only valid JSON.");
+    parts.push(
+      "When all needed tool work is complete, return only a valid JSON object.",
+    );
   }
 
   return parts.join("\n");
@@ -568,6 +568,11 @@ function normalizePromptConfig(config: unknown): NormalizedPromptConfig {
     outputSchema: normalizeOutputSchema(maybe.outputSchema),
     retry: normalizeRetryConfig(maybe.retry),
     timeoutMs: normalizeTimeoutMs(maybe.timeoutMs),
+    permissionMode: normalizePermissionMode(
+      typeof maybe.permissionMode === "string"
+        ? maybe.permissionMode
+        : "bypassPermissions",
+    ),
   };
 }
 
@@ -622,9 +627,24 @@ function normalizeTimeoutMs(value: unknown): number | null {
   return 60_000;
 }
 
-function createTimeoutSignal(timeoutMs: number | null): AbortSignal | undefined {
-  if (!timeoutMs) return undefined;
-  return AbortSignal.timeout(timeoutMs);
+function createTimeoutController(timeoutMs: number | null): {
+  signal: AbortSignal;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  if (!timeoutMs) {
+    return {
+      signal: controller.signal,
+      dispose: () => {},
+    };
+  }
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`Flow node timed out after ${timeoutMs}ms.`));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose: () => clearTimeout(timeout),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -654,10 +674,104 @@ function evaluateCondition(condition: unknown, value: unknown): boolean {
   if ("notEquals" in condition) {
     return !isDeepEqual(pathValue, condition.notEquals);
   }
+  if ("contains" in condition) {
+    return valueContains(pathValue, condition.contains);
+  }
+  if ("gt" in condition) {
+    return compareNumber(pathValue, condition.gt, (left, right) => left > right);
+  }
+  if ("gte" in condition) {
+    return compareNumber(pathValue, condition.gte, (left, right) => left >= right);
+  }
+  if ("lt" in condition) {
+    return compareNumber(pathValue, condition.lt, (left, right) => left < right);
+  }
+  if ("lte" in condition) {
+    return compareNumber(pathValue, condition.lte, (left, right) => left <= right);
+  }
   if (Array.isArray(condition.in)) {
     return condition.in.some((item) => isDeepEqual(pathValue, item));
   }
   return Boolean(pathValue);
+}
+
+function valueContains(value: unknown, needle: unknown): boolean {
+  if (typeof value === "string") {
+    return value.includes(String(needle));
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => isDeepEqual(item, needle));
+  }
+  if (isRecord(value) && typeof needle === "string") {
+    return Object.prototype.hasOwnProperty.call(value, needle);
+  }
+  return false;
+}
+
+function compareNumber(
+  leftValue: unknown,
+  rightValue: unknown,
+  compare: (left: number, right: number) => boolean,
+): boolean {
+  const left = Number(leftValue);
+  const right = Number(rightValue);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return compare(left, right);
+}
+
+function findLastAssistantMessage(messages: UIMessage[]): UIMessage | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === "assistant") return message;
+  }
+  return null;
+}
+
+function messageToText(message: UIMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text: string }).text)
+    .join("\n")
+    .trim();
+}
+
+function parseAgentOutput(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  const direct = tryParseJson(trimmed);
+  if (direct.ok) return direct.value;
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    const parsed = tryParseJson(fenced[1].trim());
+    if (parsed.ok) return parsed.value;
+  }
+
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    const parsed = tryParseJson(trimmed.slice(objectStart, objectEnd + 1));
+    if (parsed.ok) return parsed.value;
+  }
+
+  const arrayStart = trimmed.indexOf("[");
+  const arrayEnd = trimmed.lastIndexOf("]");
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    const parsed = tryParseJson(trimmed.slice(arrayStart, arrayEnd + 1));
+    if (parsed.ok) return parsed.value;
+  }
+
+  return { text: trimmed };
+}
+
+function tryParseJson(
+  value: string,
+): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(value) };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function getPath(value: unknown, path: string): unknown {

@@ -1,7 +1,13 @@
 import type { WorkspaceOption } from "./chat-session";
 import type { UIMessage } from "ai";
 
-export type FlowNodeType = "start" | "prompt" | "transform" | "condition" | "end";
+export type FlowNodeType =
+  | "start"
+  | "agent"
+  | "prompt"
+  | "transform"
+  | "condition"
+  | "end";
 
 export type FlowDefinition = {
   id: string;

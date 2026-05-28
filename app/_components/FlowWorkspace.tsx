@@ -25,6 +25,7 @@ import {
 } from "@xyflow/react";
 import type { UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 import {
   archiveFlowOnApi,
@@ -56,6 +57,7 @@ import { formatTimestamp, type WorkspaceOption } from "@/app/_lib/chat-session";
 import { Eyebrow } from "./Eyebrow";
 
 const NODE_TYPES: FlowNodeType[] = [
+  "agent",
   "prompt",
   "transform",
   "condition",
@@ -101,9 +103,9 @@ export function FlowWorkspace({
   const [flows, setFlows] = useState<FlowDefinition[]>([]);
   const [activeFlowId, setActiveFlowId] = useState("");
   const [graph, setGraph] = useState<FlowGraph | null>(null);
-  const [titleDraft, setTitleDraft] = useState("New workflow");
+  const [titleDraft, setTitleDraft] = useState("新流程");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
-  const [nodeType, setNodeType] = useState<FlowNodeType>("prompt");
+  const [nodeType, setNodeType] = useState<FlowNodeType>("agent");
   const [edgeSource, setEdgeSource] = useState("");
   const [edgeTarget, setEdgeTarget] = useState("");
   const [edgeConditionDraft, setEdgeConditionDraft] = useState("");
@@ -118,6 +120,8 @@ export function FlowWorkspace({
   const [savingEdge, setSavingEdge] = useState(false);
   const [savingFlow, setSavingFlow] = useState(false);
   const [error, setError] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
 
   const effectiveWorkspaceRoot = workspaceRoot || workspaces[0]?.root || "";
   const selectedWorkspace = useMemo(
@@ -219,9 +223,11 @@ export function FlowWorkspace({
       setSelectedNodeId(created.nodes[0]?.id ?? "");
       setSelectedNodeIds(created.nodes[0] ? [created.nodes[0].id] : []);
       setSelectedEdgeId("");
+      setEditorOpen(true);
+      setEditorFullscreen(false);
     } catch (createError) {
       setError(
-        createError instanceof Error ? createError.message : "创建 workflow 失败",
+        createError instanceof Error ? createError.message : "创建流程失败",
       );
     }
   }
@@ -265,7 +271,7 @@ export function FlowWorkspace({
         ...current.filter((run) => run.id !== detail.run.id),
       ]);
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : "运行 workflow 失败");
+      setError(runError instanceof Error ? runError.message : "运行流程失败");
     } finally {
       setRunning(false);
     }
@@ -294,7 +300,7 @@ export function FlowWorkspace({
         sourceNodeId: edgeSource,
         targetNodeId: edgeTarget,
         condition: edgeConditionDraft.trim()
-          ? parseConfigJson(edgeConditionDraft, "Edge condition")
+          ? parseConfigJson(edgeConditionDraft, "连线条件")
           : null,
       });
       const nextGraph = await fetchFlowGraph(graph.flow.id);
@@ -547,9 +553,9 @@ export function FlowWorkspace({
     <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden px-5 py-6 sm:px-8 lg:px-10">
       <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <Eyebrow>Flows</Eyebrow>
+          <Eyebrow>流程</Eyebrow>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
-            Workflow Canvas
+            流程画布
           </h2>
         </div>
         <div className="grid gap-2 sm:grid-cols-[minmax(160px,1fr)_minmax(180px,1fr)_auto]">
@@ -557,7 +563,7 @@ export function FlowWorkspace({
             value={titleDraft}
             onChange={(event) => setTitleDraft(event.target.value)}
             className="h-10 rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-900"
-            placeholder="Workflow name"
+            placeholder="流程名称"
           />
           <select
             value={effectiveWorkspaceRoot}
@@ -577,7 +583,7 @@ export function FlowWorkspace({
             disabled={!selectedWorkspace}
             className="h-10 rounded-md border border-slate-900 bg-slate-900 px-4 font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-white disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-200"
           >
-            Create
+            创建
           </button>
         </div>
       </div>
@@ -591,14 +597,17 @@ export function FlowWorkspace({
       <div className="grid min-h-0 flex-1 gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
         <div className="min-h-0 overflow-y-auto border-r border-slate-200 pr-4">
           <div className="mb-3 flex items-center justify-between">
-            <Eyebrow>All Workflows · {flows.length}</Eyebrow>
+            <Eyebrow>全部流程 · {flows.length}</Eyebrow>
           </div>
           <div className="space-y-2">
             {flows.map((flow) => (
               <button
                 key={flow.id}
                 type="button"
-                onClick={() => setActiveFlowId(flow.id)}
+                onClick={() => {
+                  setActiveFlowId(flow.id);
+                  setEditorOpen(true);
+                }}
                 className={[
                   "w-full rounded-md border px-3 py-3 text-left transition-colors",
                   flow.id === activeFlowId
@@ -610,20 +619,53 @@ export function FlowWorkspace({
                   {flow.title}
                 </div>
                 <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                  {flow.workspaceName || "workspace"} ·{" "}
+                  {flow.workspaceName || "工作区"} ·{" "}
                   {formatTimestamp(new Date(flow.updatedAt).toISOString())}
                 </div>
               </button>
             ))}
             {flows.length === 0 && (
               <div className="rounded-md border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
-                暂无 workflow
+                暂无流程
               </div>
             )}
           </div>
         </div>
 
         {activeFlowId && graph ? (
+          <div className="flex min-h-0 flex-col justify-between rounded-md border border-slate-200 bg-white p-5">
+            <div>
+              <Eyebrow>当前流程</Eyebrow>
+              <h3 className="mt-2 text-xl font-semibold text-slate-900">
+                {graph.flow.title}
+              </h3>
+              <p className="mt-2 text-sm text-slate-600">
+                {graph.nodes.length} 个节点 · {graph.edges.length} 条连线 ·{" "}
+                {graph.flow.workspaceName || "工作区"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditorOpen(true)}
+              className="mt-4 h-10 w-fit rounded-md border border-slate-900 bg-slate-900 px-4 text-sm font-medium text-white"
+            >
+              打开编辑器
+            </button>
+          </div>
+        ) : (
+          <div className="flex min-h-0 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
+            创建或选择一个流程
+          </div>
+        )}
+      </div>
+
+      {editorOpen && activeFlowId && graph && (
+        <FlowEditorDialog
+          title={graph.flow.title}
+          fullscreen={editorFullscreen}
+          onToggleFullscreen={() => setEditorFullscreen((current) => !current)}
+          onClose={() => setEditorOpen(false)}
+        >
           <FlowEditor
             graph={graph}
             nodeType={nodeType}
@@ -667,11 +709,67 @@ export function FlowWorkspace({
             onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
             onDeleteEdge={(edgeId) => void handleDeleteEdge(edgeId)}
           />
-        ) : (
-          <div className="flex min-h-0 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
-            创建或选择一个 workflow
+        </FlowEditorDialog>
+      )}
+    </div>
+  );
+}
+
+function FlowEditorDialog({
+  title,
+  fullscreen,
+  children,
+  onToggleFullscreen,
+  onClose,
+}: {
+  title: string;
+  fullscreen: boolean;
+  children: ReactNode;
+  onToggleFullscreen: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${title} 流程编辑器`}
+    >
+      <div
+        className={[
+          "flex min-h-0 flex-col overflow-hidden border border-slate-900 bg-white shadow-2xl",
+          fullscreen
+            ? "h-screen w-screen rounded-none"
+            : "h-[90vh] w-[90vw] rounded-md",
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-slate-900">
+              {title}
+            </div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+              流程编辑器
+            </div>
           </div>
-        )}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onToggleFullscreen}
+              className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 hover:border-slate-900"
+            >
+              {fullscreen ? "退出全屏" : "全屏"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 rounded-md border border-slate-900 bg-slate-900 px-3 text-sm text-white"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden p-4">{children}</div>
       </div>
     </div>
   );
@@ -906,9 +1004,9 @@ function FlowEditor({
             {graph.flow.title}
           </div>
           <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
-            {graph.nodes.length} nodes · {graph.edges.length} edges
+            {graph.nodes.length} 个节点 · {graph.edges.length} 条连线
             {selectedNodeIds.length > 1
-              ? ` · ${selectedNodeIds.length} selected`
+              ? ` · 已选择 ${selectedNodeIds.length} 个`
               : ""}
           </div>
         </div>
@@ -922,7 +1020,7 @@ function FlowEditor({
           >
             {NODE_TYPES.map((type) => (
               <option key={type} value={type}>
-                {type}
+                {nodeTypeLabel(type)}
               </option>
             ))}
           </select>
@@ -932,14 +1030,14 @@ function FlowEditor({
             disabled={running}
             className="h-9 rounded-md border border-emerald-700 bg-emerald-700 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
           >
-            {running ? "Running" : "Run"}
+            {running ? "运行中" : "运行"}
           </button>
           <button
             type="button"
             onClick={onAddNode}
             className="h-9 rounded-md border border-slate-900 bg-white px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-900"
           >
-            Add Node
+            添加节点
           </button>
         </div>
       </div>
@@ -957,7 +1055,7 @@ function FlowEditor({
           ))}
         </select>
         <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
-          to
+          到
         </span>
         <select
           value={edgeTarget}
@@ -975,7 +1073,7 @@ function FlowEditor({
           onClick={onConnectNodes}
           className="h-9 rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white"
         >
-          Connect
+          连接
         </button>
         <input
           value={edgeConditionDraft}
@@ -1115,7 +1213,9 @@ function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
       <div
         className={[
           "absolute inset-y-2 left-0 w-1 rounded-r",
-          node.type === "prompt"
+          node.type === "agent"
+            ? "bg-violet-600"
+            : node.type === "prompt"
             ? "bg-emerald-600"
             : node.type === "condition"
               ? "bg-amber-500"
@@ -1126,7 +1226,7 @@ function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
       />
       <div className="flex items-center justify-between gap-2">
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
-          {node.type}
+          {nodeTypeLabel(node.type)}
         </div>
         {nodeRun && (
           <span
@@ -1139,7 +1239,7 @@ function FlowNodeCard({ data, selected }: NodeProps<FlowCanvasNode>) {
                   : "bg-slate-100 text-slate-600",
             ].join(" ")}
           >
-            {nodeRun.status}
+            {runStatusLabel(nodeRun.status)}
           </span>
         )}
       </div>
@@ -1268,14 +1368,14 @@ function FlowInspector({
 
         <section className="rounded-md border border-slate-200 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <Eyebrow>Run Input</Eyebrow>
+            <Eyebrow>运行输入</Eyebrow>
             <button
               type="button"
               onClick={onRunFlow}
               disabled={running}
               className="h-8 rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
             >
-              {running ? "Running" : "Run"}
+              {running ? "运行中" : "运行"}
             </button>
           </div>
           <textarea
@@ -1287,7 +1387,7 @@ function FlowInspector({
         </section>
 
         <section className="rounded-md border border-slate-200 p-3">
-          <Eyebrow>Runs · {runs.length}</Eyebrow>
+          <Eyebrow>运行记录 · {runs.length}</Eyebrow>
           <div className="mt-2 space-y-2">
             {runs.slice(0, 6).map((run) => (
               <button
@@ -1302,7 +1402,9 @@ function FlowInspector({
                 ].join(" ")}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-slate-900">{run.status}</span>
+                  <span className="font-medium text-slate-900">
+                    {runStatusLabel(run.status)}
+                  </span>
                   <span className="font-mono text-[10px] text-slate-500">
                     {formatTimestamp(new Date(run.startedAt).toISOString())}
                   </span>
@@ -1323,23 +1425,23 @@ function FlowInspector({
         {selectedEdge && (
           <section className="rounded-md border border-slate-200 p-3">
             <div className="mb-3 flex items-center justify-between gap-2">
-              <Eyebrow>Edge Inspector</Eyebrow>
+              <Eyebrow>连线配置</Eyebrow>
               <button
                 type="button"
                 onClick={() => onDeleteEdge(selectedEdge.id)}
                 className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50"
               >
-                Delete
+                删除
               </button>
             </div>
             <div className="space-y-2 text-sm text-slate-700">
               <div>
                 <span className="font-medium text-slate-900">
-                  {selectedEdgeSource?.title ?? "Unknown"}
+                  {selectedEdgeSource?.title ?? "未知"}
                 </span>{" "}
-                to{" "}
+                到{" "}
                 <span className="font-medium text-slate-900">
-                  {selectedEdgeTarget?.title ?? "Unknown"}
+                  {selectedEdgeTarget?.title ?? "未知"}
                 </span>
               </div>
               <EdgeConfigForm
@@ -1355,8 +1457,8 @@ function FlowInspector({
         <section className="rounded-md border border-slate-200 p-3">
           <div className="flex items-center justify-between gap-2">
             <Eyebrow>
-              Node Inspector
-              {selectedNodeCount > 1 ? ` · ${selectedNodeCount} selected` : ""}
+              节点配置
+              {selectedNodeCount > 1 ? ` · 已选择 ${selectedNodeCount} 个` : ""}
             </Eyebrow>
             {selectedNode && (
               <div className="flex items-center gap-2">
@@ -1365,7 +1467,7 @@ function FlowInspector({
                   onClick={() => onOpenNodeDetail(selectedNode.id)}
                   className="h-8 rounded-md border border-slate-900 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-900 hover:bg-slate-50"
                 >
-                  Detail
+                  详情
                 </button>
                 <button
                   type="button"
@@ -1375,7 +1477,7 @@ function FlowInspector({
                   }
                   className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400 disabled:hover:bg-white"
                 >
-                  Delete
+                  删除
                 </button>
               </div>
             )}
@@ -1384,7 +1486,7 @@ function FlowInspector({
             <div className="mt-3 space-y-3">
               <div>
                 <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                  {selectedNode.type}
+                  {nodeTypeLabel(selectedNode.type)}
                 </div>
               </div>
               <NodeConfigForm
@@ -1393,13 +1495,13 @@ function FlowInspector({
                 savingNode={savingNode}
                 onSaveNode={onSaveNode}
               />
-              <JsonBlock label="Config" value={selectedNode.config} />
-              <JsonBlock label="Last Input" value={selectedNodeRun?.input ?? null} />
+              <JsonBlock label="配置" value={selectedNode.config} />
+              <JsonBlock label="最近输入" value={selectedNodeRun?.input ?? null} />
               <JsonBlock
-                label="Last Output"
+                label="最近输出"
                 value={selectedNodeRun?.output ?? null}
               />
-              <JsonBlock label="Trace" value={selectedNodeRun?.trace ?? null} />
+              <JsonBlock label="执行轨迹" value={selectedNodeRun?.trace ?? null} />
               <TranscriptLoader
                 key={selectedNodeRun?.transcriptThreadId ?? "empty"}
                 threadId={selectedNodeRun?.transcriptThreadId ?? null}
@@ -1442,15 +1544,15 @@ function NodeRunDetailDialog({
         <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
-              Node Detail · {node.type}
+              节点详情 · {nodeTypeLabel(node.type)}
             </div>
             <h3 className="mt-1 text-xl font-semibold tracking-tight text-slate-900">
               {node.title}
             </h3>
             <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-              <span>Node {node.id.slice(0, 8)}</span>
-              <span>Run {activeRun?.run.id.slice(0, 8) ?? "none"}</span>
-              <span>Status {nodeRun?.status ?? "not-run"}</span>
+              <span>节点 {node.id.slice(0, 8)}</span>
+              <span>运行 {activeRun?.run.id.slice(0, 8) ?? "无"}</span>
+              <span>状态 {runStatusLabel(nodeRun?.status ?? null)}</span>
             </div>
           </div>
           <button
@@ -1458,49 +1560,49 @@ function NodeRunDetailDialog({
             onClick={onClose}
             className="h-9 rounded-md border border-slate-900 bg-white px-4 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-900 hover:bg-slate-50"
           >
-            Close
+            关闭
           </button>
         </div>
 
         <div className="grid max-h-[calc(100vh-10rem)] min-h-0 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div className="space-y-4">
             <section className="rounded-md border border-slate-200 p-3">
-              <Eyebrow>Run State</Eyebrow>
+              <Eyebrow>运行状态</Eyebrow>
               <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
                 <div>
                   <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                    Started
+                    开始
                   </dt>
                   <dd>
                     {nodeRun
                       ? formatTimestamp(new Date(nodeRun.startedAt).toISOString())
-                      : "none"}
+                      : "无"}
                   </dd>
                 </div>
                 <div>
                   <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                    Finished
+                    结束
                   </dt>
                   <dd>
                     {nodeRun?.finishedAt
                       ? formatTimestamp(new Date(nodeRun.finishedAt).toISOString())
-                      : "none"}
+                      : "无"}
                   </dd>
                 </div>
                 <div>
                   <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                    Flow Run
+                    流程运行
                   </dt>
                   <dd className="font-mono text-xs">
-                    {activeRun?.run.status ?? "none"}
+                    {runStatusLabel(activeRun?.run.status ?? null)}
                   </dd>
                 </div>
                 <div>
                   <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                    Transcript
+                    对话记录
                   </dt>
                   <dd className="font-mono text-xs">
-                    {nodeRun?.transcriptThreadId?.slice(0, 8) ?? "none"}
+                    {nodeRun?.transcriptThreadId?.slice(0, 8) ?? "无"}
                   </dd>
                 </div>
               </dl>
@@ -1511,17 +1613,17 @@ function NodeRunDetailDialog({
               )}
             </section>
             <JsonBlock
-              label="Node Config"
+              label="节点配置"
               value={node.config}
               heightClassName="max-h-80"
             />
             <JsonBlock
-              label="Input"
+              label="输入"
               value={nodeRun?.input ?? null}
               heightClassName="max-h-80"
             />
             <JsonBlock
-              label="Output"
+              label="输出"
               value={nodeRun?.output ?? null}
               heightClassName="max-h-80"
             />
@@ -1529,7 +1631,7 @@ function NodeRunDetailDialog({
 
           <div className="space-y-4">
             <JsonBlock
-              label="Trace"
+              label="执行轨迹"
               value={nodeRun?.trace ?? null}
               heightClassName="max-h-96"
             />
@@ -1563,7 +1665,7 @@ function TranscriptLoader({ threadId }: { threadId: string | null }) {
         if (cancelled) return;
         setMessages([]);
         setError(
-          loadError instanceof Error ? loadError.message : "Transcript 加载失败",
+          loadError instanceof Error ? loadError.message : "对话记录加载失败",
         );
       });
     return () => {
@@ -1594,7 +1696,7 @@ function TranscriptBlock({
   return (
     <div>
       <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-        Transcript
+        对话记录
       </div>
       {error ? (
         <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800">
@@ -1652,20 +1754,20 @@ function FlowDetailsForm({
   return (
     <section className="rounded-md border border-slate-200 p-3">
       <div className="mb-3 flex items-center justify-between gap-2">
-        <Eyebrow>Flow Details</Eyebrow>
+        <Eyebrow>流程详情</Eyebrow>
         <button
           type="button"
           onClick={onArchiveFlow}
           disabled={savingFlow}
           className="h-8 rounded-md border border-rose-700 bg-white px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 hover:bg-rose-50 disabled:cursor-wait disabled:border-slate-300 disabled:text-slate-400 disabled:hover:bg-white"
         >
-          Archive
+          归档
         </button>
       </div>
       <div className="space-y-2">
         <label className="block">
           <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-            Title
+            标题
           </span>
           <input
             value={titleDraft}
@@ -1675,7 +1777,7 @@ function FlowDetailsForm({
         </label>
         <label className="block">
           <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-            Description
+            描述
           </span>
           <textarea
             value={descriptionDraft}
@@ -1689,7 +1791,7 @@ function FlowDetailsForm({
           disabled={savingFlow}
           className="h-9 w-full rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
         >
-          {savingFlow ? "Saving" : "Save Flow"}
+          {savingFlow ? "保存中" : "保存流程"}
         </button>
       </div>
     </section>
@@ -1717,7 +1819,7 @@ function EdgeConfigForm({
         edgeId: edge.id,
         condition: parseConfigJson(
           conditionDraft.trim() || "null",
-          "Edge condition",
+          "连线条件",
         ) as unknown | null,
       });
     } catch (error) {
@@ -1731,7 +1833,7 @@ function EdgeConfigForm({
     <div className="space-y-2">
       <label className="block">
         <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-          Condition
+          条件
         </span>
         <textarea
           value={conditionDraft}
@@ -1751,7 +1853,7 @@ function EdgeConfigForm({
         disabled={savingEdge}
         className="h-9 w-full rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
       >
-        {savingEdge ? "Saving" : "Save Edge"}
+        {savingEdge ? "保存中" : "保存连线"}
       </button>
     </div>
   );
@@ -1799,7 +1901,7 @@ function NodeConfigForm({
     setConfigError("");
     try {
       const config =
-        node.type === "prompt"
+        node.type === "agent" || node.type === "prompt"
           ? buildPromptConfig({
               existing: node.config,
               prompt: promptDraft,
@@ -1820,7 +1922,7 @@ function NodeConfigForm({
                   inputMappingText: inputMappingDraft,
                   conditionText: conditionDraft,
                 })
-              : parseConfigJson(configDraft, "Config");
+              : parseConfigJson(configDraft, "配置");
       onSaveNode({
         nodeId: node.id,
         title: titleDraft,
@@ -1835,7 +1937,7 @@ function NodeConfigForm({
     <>
       <label className="block">
         <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-          Title
+          标题
         </span>
         <input
           value={titleDraft}
@@ -1843,7 +1945,7 @@ function NodeConfigForm({
           className="h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-900"
         />
       </label>
-      {node.type === "prompt" ? (
+      {node.type === "agent" || node.type === "prompt" ? (
         <>
           <InputMappingEditor
             value={inputMappingDraft}
@@ -1851,7 +1953,7 @@ function NodeConfigForm({
           />
           <label className="block">
             <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-              Prompt
+              提示词
             </span>
             <textarea
               value={promptDraft}
@@ -1862,7 +1964,7 @@ function NodeConfigForm({
           </label>
           <label className="block">
             <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-              Output Schema
+              输出结构
             </span>
             <textarea
               value={schemaDraft}
@@ -1874,7 +1976,7 @@ function NodeConfigForm({
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                Retry
+                重试
               </span>
               <input
                 value={retryDraft}
@@ -1885,7 +1987,7 @@ function NodeConfigForm({
             </label>
             <label className="block">
               <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                Timeout ms
+                超时 ms
               </span>
               <input
                 value={timeoutDraft}
@@ -1904,7 +2006,7 @@ function NodeConfigForm({
           />
           <label className="block">
             <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-              Output Path
+              输出路径
             </span>
             <input
               value={outputPathDraft}
@@ -1922,7 +2024,7 @@ function NodeConfigForm({
           />
           <label className="block">
             <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-              Condition
+              条件
             </span>
             <textarea
               value={conditionDraft}
@@ -1935,7 +2037,7 @@ function NodeConfigForm({
       ) : (
         <label className="block">
           <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-            Config
+            配置
           </span>
           <textarea
             value={configDraft}
@@ -1956,7 +2058,7 @@ function NodeConfigForm({
         disabled={savingNode}
         className="h-9 w-full rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
       >
-        {savingNode ? "Saving" : "Save Node"}
+        {savingNode ? "保存中" : "保存节点"}
       </button>
     </>
   );
@@ -1972,7 +2074,7 @@ function InputMappingEditor({
   return (
     <label className="block">
       <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-        Input Mapping
+        输入映射
       </span>
       <textarea
         value={value}
@@ -2014,7 +2116,7 @@ function parseJsonDraft(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    throw new Error("Run input 必须是合法 JSON。");
+    throw new Error("运行输入必须是合法 JSON。");
   }
 }
 
@@ -2134,7 +2236,7 @@ function buildConditionConfig(params: {
   const existing = isRecord(params.existing) ? params.existing : {};
   const condition = parseConfigJson(
     params.conditionText.trim() || "{}",
-    "Condition",
+    "条件",
   );
   return {
     ...existing,
@@ -2144,9 +2246,9 @@ function buildConditionConfig(params: {
 }
 
 function parseInputMapping(value: string): Record<string, unknown> {
-  const parsed = parseConfigJson(value.trim() || "{}", "Input mapping");
+  const parsed = parseConfigJson(value.trim() || "{}", "输入映射");
   if (!isRecord(parsed)) {
-    throw new Error("Input mapping 必须是 JSON object。");
+    throw new Error("输入映射必须是 JSON object。");
   }
   return parsed;
 }
@@ -2164,4 +2266,40 @@ function normalizeInteger(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nodeTypeLabel(type: FlowNodeType): string {
+  switch (type) {
+    case "start":
+      return "开始";
+    case "agent":
+      return "智能体";
+    case "prompt":
+      return "提示词";
+    case "transform":
+      return "转换";
+    case "condition":
+      return "判断";
+    case "end":
+      return "结束";
+  }
+}
+
+function runStatusLabel(status: FlowRun["status"] | null): string {
+  switch (status) {
+    case "queued":
+      return "排队中";
+    case "running":
+      return "运行中";
+    case "succeeded":
+      return "成功";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+    case "skipped":
+      return "已跳过";
+    default:
+      return "未运行";
+  }
 }
