@@ -65,6 +65,7 @@ export type ChatRunOptions = {
   shellApprovalPolicy: ShellApprovalPolicy | undefined;
   permissionMode: PermissionMode;
   planMode: boolean;
+  autoApproveTools?: boolean;
   conversationSummary: string | null;
   skills: SkillMetadata[];
   hookContexts: string[];
@@ -424,6 +425,7 @@ async function runAgentStep(params: {
         shellApprovalPolicy: options.shellApprovalPolicy ?? "untrusted",
         permissionMode: options.permissionMode,
         planMode: options.planMode,
+        autoApproveTools: options.autoApproveTools === true,
         chatId: options.chatId,
       },
       abortSignal: params.abortSignal,

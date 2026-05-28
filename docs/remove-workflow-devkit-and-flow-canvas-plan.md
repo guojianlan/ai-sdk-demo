@@ -277,6 +277,78 @@ Required behavior:
 - The transcript can show user prompts, assistant text, and tool call input/output.
   It must not claim to expose hidden chain-of-thought reasoning.
 
+### 2026-05-28 Product Reference Analysis: Coze / n8n Shape
+
+References checked:
+
+- https://aisharenet.com/cozekouzi_mian/
+- https://www.1ai.net/en/17951.html
+- https://juejin.cn/post/7336841191772143642
+- https://juejin.cn/post/7365704703362269184
+- https://www.upskillist.com/blog/n8n-review/
+
+Design takeaways:
+
+- Coze treats workflow as a callable function: start input variables, tool/plugin
+  blocks, code/transform blocks, LLM blocks, variable/knowledge-base blocks, and
+  final output. Our Flow should make each node's input JSON, config, output JSON,
+  and downstream handoff visible.
+- Coze multi-agent mode reduces prompt complexity by splitting responsibilities
+  across nodes/agents. Our `agent` node should remain the first-class AI node,
+  while `prompt` stays as a compatibility alias. Each agent node can have its own
+  tools, prompt, output schema, timeout, retry, and transcript.
+- Coze debugging is node-local: when one node fails, the builder edits that node
+  instead of rewriting the whole bot. Our canvas click behavior should therefore
+  switch the inspector to the selected node's run record when a run is selected.
+- Coze articles repeatedly use plugins and webhook/event triggers as extension
+  points. For this project, plugin-like capabilities should first be exposed as
+  Chat tools callable by Flow agent nodes. Flow should not create a separate tool
+  runtime; it should orchestrate Chat tools.
+- n8n's strength is an always-visible node canvas with real logic: branching,
+  retries, error handling, execution logs, and self-hosted control. Our MVP should
+  favor a dense builder surface over a marketing page: list tab, detail/edit tab,
+  canvas, inspector, run list, and per-node execution detail.
+- n8n-style run history is essential. A Run click must create a durable execution
+  record, update node states (`等待中` -> `执行中` -> `已完成` / `失败`), and leave
+  a replayable log after completion.
+- Long-running workflow output should not be hidden behind a blank button state.
+  Even if a node is still running, its `transcriptThreadId` should be persisted
+  as soon as it exists so the UI can show the active chat/tool trace.
+
+Current UX target:
+
+- The Flow page is a two-tab surface:
+  - `流程列表`: discover/select/create flows.
+  - `查看与修改`: edit the selected flow directly, with a full-screen/90% modal
+    option for focused editing.
+- The editor is a three-zone builder:
+  - canvas: nodes, edges, pan, zoom, status badges.
+  - inspector: config or run detail.
+  - run record list: each click selects one execution snapshot.
+- Clicking a node while a run is selected should show the selected node's run
+  detail first. Double-clicking can still open a larger node detail dialog.
+- The right inspector must be its own scroll container in both inline detail mode
+  and the 90% modal, so lower config/output/transcript content is reachable.
+
+### 2026-05-28 Image Capability Decision
+
+The local OpenAI-compatible gateway at `OPENAI_COMPAT_BASE_URL` exposes
+`gpt-image-2`, and a direct `/v1/images/generations` request with that model
+returns `b64_json` successfully. The previous sample Flow failed because the
+default image model was still `gpt-image-1`, which the gateway rejected.
+
+Decision:
+
+- Default `OPENAI_COMPAT_IMAGE_MODEL` fallback should be `gpt-image-2`.
+- Keep the existing `image_generation` Chat tool as the runtime integration point.
+  It already acts like a plugin capability from the agent's perspective: the
+  agent calls it with JSON input, waits for the result, and receives a saved
+  artifact path.
+- Do not add a Flow-only image special case. If we later add a broader plugin
+  system, image generation can be one registered external tool, but the execution
+  contract should still be: Flow agent node -> Chat agent loop -> tool call ->
+  tool result -> final JSON.
+
 ## UX Shape
 
 ### App navigation
@@ -872,6 +944,13 @@ Verified:
 - `npx tsc --noEmit` after adding persisted chat run records.
 - `npm run lint` after adding persisted chat run records.
 - API smoke: created a synthetic persisted `running` chat run and active stream pointer, called `GET /api/chat/[chatId]/stream`, verified the endpoint returned `204`, verified `GET /api/chat/[chatId]/runs` reported the run as `interrupted`, then cleaned up the temporary runtime rows.
+- Source review: checked Coze/n8n reference articles and recorded the current product target as `流程列表` plus `查看与修改`, with Coze-style node-local debugging and n8n-style durable execution records.
+- Direct gateway smoke: `GET /v1/models` showed `gpt-image-2`; direct `/v1/images/generations` with `gpt-image-2` returned one `b64_json` image result.
+- Browser smoke on `127.0.0.1:3002`: opened Flows, selected `env-docker README 图像测试流`, verified `查看与修改` renders the editor directly, clicked `读取 README`, verified `运行详情` is active, verified selected-node run detail is visible, and verified the right inspector scrolls independently (`scrollHeight` > `clientHeight`).
+- API smoke: ran `env-docker README 图像测试流` after switching the image fallback model to `gpt-image-2`; the run succeeded and returned `.flow-artifacts/images/flow-readme-demo.png`.
+- `npx tsc --noEmit`
+- `npm run lint`
+- `npm run build` passed; Turbopack reported existing broad dynamic filesystem tracing warnings around skill discovery / command hooks, but production compilation completed successfully.
 
 Remaining:
 - No known plan items remain open in this document. Completion still requires a final audit against the original user-facing product goal and current code.

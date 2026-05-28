@@ -125,6 +125,7 @@ export function FlowWorkspace({
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorFullscreen, setEditorFullscreen] = useState(false);
+  const [pageTab, setPageTab] = useState<"list" | "detail">("list");
 
   const effectiveWorkspaceRoot = workspaceRoot || workspaces[0]?.root || "";
   const selectedWorkspace = useMemo(
@@ -260,6 +261,7 @@ export function FlowWorkspace({
       setSelectedEdgeId("");
       setEditorOpen(true);
       setEditorFullscreen(false);
+      setPageTab("detail");
     } catch (createError) {
       setError(
         createError instanceof Error ? createError.message : "创建流程失败",
@@ -623,76 +625,133 @@ export function FlowWorkspace({
         </div>
       </div>
 
+      <div className="flex w-fit rounded-md border border-slate-200 bg-slate-50 p-1">
+        <button
+          type="button"
+          onClick={() => setPageTab("list")}
+          className={[
+            "h-9 rounded px-4 text-sm font-medium",
+            pageTab === "list"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-900",
+          ].join(" ")}
+        >
+          流程列表
+        </button>
+        <button
+          type="button"
+          onClick={() => setPageTab("detail")}
+          disabled={!graph}
+          className={[
+            "h-9 rounded px-4 text-sm font-medium",
+            pageTab === "detail"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-900",
+            !graph ? "cursor-not-allowed opacity-50" : "",
+          ].join(" ")}
+        >
+          查看与修改
+        </button>
+      </div>
+
       {error && (
         <div className="rounded-md border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
           {error}
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <div className="min-h-0 overflow-y-auto border-r border-slate-200 pr-4">
-          <div className="mb-3 flex items-center justify-between">
-            <Eyebrow>全部流程 · {flows.length}</Eyebrow>
-          </div>
-          <div className="space-y-2">
+      {pageTab === "list" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {flows.map((flow) => (
               <button
                 key={flow.id}
                 type="button"
                 onClick={() => {
                   setActiveFlowId(flow.id);
-                  setEditorOpen(true);
+                  setPageTab("detail");
                 }}
                 className={[
-                  "w-full rounded-md border px-3 py-3 text-left transition-colors",
+                  "min-h-32 rounded-md border bg-white p-4 text-left transition-colors",
                   flow.id === activeFlowId
                     ? "border-slate-900 border-l-[3px]"
                     : "border-slate-200 hover:border-slate-400",
                 ].join(" ")}
               >
-                <div className="truncate text-sm font-medium text-slate-900">
+                <div className="truncate text-base font-semibold text-slate-900">
                   {flow.title}
                 </div>
-                <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                <div className="mt-2 text-sm text-slate-600">
+                  {flow.description || "暂无描述"}
+                </div>
+                <div className="mt-4 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                   {flow.workspaceName || "工作区"} ·{" "}
                   {formatTimestamp(new Date(flow.updatedAt).toISOString())}
                 </div>
               </button>
             ))}
             {flows.length === 0 && (
-              <div className="rounded-md border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-md border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-500">
                 暂无流程
               </div>
             )}
           </div>
         </div>
-
-        {activeFlowId && graph ? (
-          <div className="flex min-h-0 flex-col justify-between rounded-md border border-slate-200 bg-white p-5">
-            <div>
-              <Eyebrow>当前流程</Eyebrow>
-              <h3 className="mt-2 text-xl font-semibold text-slate-900">
-                {graph.flow.title}
-              </h3>
-              <p className="mt-2 text-sm text-slate-600">
-                {graph.nodes.length} 个节点 · {graph.edges.length} 条连线 ·{" "}
-                {graph.flow.workspaceName || "工作区"}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setEditorOpen(true)}
-              className="mt-4 h-10 w-fit rounded-md border border-slate-900 bg-slate-900 px-4 text-sm font-medium text-white"
-            >
-              打开编辑器
-            </button>
-          </div>
-        ) : (
-          <div className="flex min-h-0 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
-            创建或选择一个流程
-          </div>
-        )}
-      </div>
+      ) : activeFlowId && graph ? (
+        <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-slate-200 bg-white p-4">
+          <FlowEditor
+            graph={graph}
+            nodeType={nodeType}
+            edgeSource={edgeSource}
+            edgeTarget={edgeTarget}
+            edgeConditionDraft={edgeConditionDraft}
+            onNodeTypeChange={setNodeType}
+            onEdgeSourceChange={setEdgeSource}
+            onEdgeTargetChange={setEdgeTarget}
+            onEdgeConditionDraftChange={setEdgeConditionDraft}
+            selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
+            selectedEdgeId={selectedEdgeId}
+            onSelectedNodesChange={handleSelectNodes}
+            onSelectedEdgeChange={(edgeId) => {
+              setSelectedEdgeId(edgeId);
+              setSelectedNodeId("");
+              setSelectedNodeIds([]);
+            }}
+            runs={runs}
+            activeRun={activeRun}
+            inputDraft={inputDraft}
+            running={running}
+            savingFlow={savingFlow}
+            savingNode={savingNode}
+            savingEdge={savingEdge}
+            onInputDraftChange={setInputDraft}
+            onAddNode={() => void handleAddNode()}
+            onConnectNodes={() => void handleConnectNodes()}
+            onConnectNodePair={(params) => void handleConnectNodePair(params)}
+            onRunFlow={() => void handleRunFlow()}
+            onSelectRun={(runId) => void handleSelectRun(runId)}
+            onSaveFlow={(params) => void handleSaveFlow(params)}
+            onArchiveFlow={() => void handleArchiveFlow()}
+            onSaveNode={(params) => void handleSaveNode(params)}
+            onPreviewNodePositions={handlePreviewNodePositions}
+            onCommitNodePositions={(patches) =>
+              void handleCommitNodePositions(patches)
+            }
+            onSaveEdge={(params) => void handleSaveEdge(params)}
+            onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
+            onDeleteEdge={(edgeId) => void handleDeleteEdge(edgeId)}
+            onOpenFullscreen={() => {
+              setEditorFullscreen(true);
+              setEditorOpen(true);
+            }}
+          />
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
+          创建或选择一个流程
+        </div>
+      )}
 
       {editorOpen && activeFlowId && graph && (
         <FlowEditorDialog
@@ -743,6 +802,7 @@ export function FlowWorkspace({
             onSaveEdge={(params) => void handleSaveEdge(params)}
             onDeleteNode={(nodeId) => void handleDeleteNode(nodeId)}
             onDeleteEdge={(edgeId) => void handleDeleteEdge(edgeId)}
+            onOpenFullscreen={() => setEditorFullscreen(true)}
           />
         </FlowEditorDialog>
       )}
@@ -846,6 +906,7 @@ function FlowEditor({
   onSaveEdge,
   onDeleteNode,
   onDeleteEdge,
+  onOpenFullscreen,
 }: {
   graph: FlowGraph;
   nodeType: FlowNodeType;
@@ -889,8 +950,12 @@ function FlowEditor({
   onSaveEdge: (params: { edgeId: string; condition: unknown | null }) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteEdge: (edgeId: string) => void;
+  onOpenFullscreen?: () => void;
 }) {
   const [detailNodeId, setDetailNodeId] = useState("");
+  const [inspectorMode, setInspectorMode] = useState<"config" | "detail">(
+    "config",
+  );
 
   const selectedNode = selectedNodeId
     ? graph.nodes.find((node) => node.id === selectedNodeId)
@@ -969,6 +1034,7 @@ function FlowEditor({
         ) {
           return;
         }
+        setInspectorMode("detail");
         onSelectedNodesChange(nodeIds, nodeIds[nodeIds.length - 1]);
         return;
       }
@@ -1034,97 +1100,106 @@ function FlowEditor({
     );
 
   return (
-    <div className="grid min-h-0 gap-4 overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="flex min-h-0 flex-col overflow-hidden">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-lg font-semibold text-slate-900">
-            {graph.flow.title}
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(320px,45%)] gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_380px] xl:grid-rows-1">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">
+              {graph.flow.title}
+            </div>
+            <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
+              {graph.nodes.length} 个节点 · {graph.edges.length} 条连线
+              {selectedNodeIds.length > 1
+                ? ` · 已选择 ${selectedNodeIds.length} 个`
+                : ""}
+            </div>
           </div>
-          <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
-            {graph.nodes.length} 个节点 · {graph.edges.length} 条连线
-            {selectedNodeIds.length > 1
-              ? ` · 已选择 ${selectedNodeIds.length} 个`
-              : ""}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={nodeType}
+              onChange={(event) =>
+                onNodeTypeChange(event.target.value as FlowNodeType)
+              }
+              className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm"
+            >
+              {NODE_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {nodeTypeLabel(type)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={onRunFlow}
+              disabled={flowRunning}
+              className="h-9 rounded-md border border-emerald-700 bg-emerald-700 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
+            >
+              {flowRunning ? "运行中" : "运行"}
+            </button>
+            <button
+              type="button"
+              onClick={onAddNode}
+              className="h-9 rounded-md border border-slate-900 bg-white px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-900"
+            >
+              添加节点
+            </button>
+            {onOpenFullscreen && (
+              <button
+                type="button"
+                onClick={onOpenFullscreen}
+                className="h-9 rounded-md border border-slate-300 bg-white px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-700 hover:border-slate-900"
+              >
+                全屏
+              </button>
+            )}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
           <select
-            value={nodeType}
-            onChange={(event) =>
-              onNodeTypeChange(event.target.value as FlowNodeType)
-            }
-            className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm"
+            value={edgeSource}
+            onChange={(event) => onEdgeSourceChange(event.target.value)}
+            className="h-9 min-w-36 rounded-md border border-slate-300 bg-white px-2 text-sm"
           >
-            {NODE_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {nodeTypeLabel(type)}
+            {graph.nodes.map((node) => (
+              <option key={node.id} value={node.id}>
+                {node.title}
+              </option>
+            ))}
+          </select>
+          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
+            到
+          </span>
+          <select
+            value={edgeTarget}
+            onChange={(event) => onEdgeTargetChange(event.target.value)}
+            className="h-9 min-w-36 rounded-md border border-slate-300 bg-white px-2 text-sm"
+          >
+            {graph.nodes.map((node) => (
+              <option key={node.id} value={node.id}>
+                {node.title}
               </option>
             ))}
           </select>
           <button
             type="button"
-            onClick={onRunFlow}
-            disabled={flowRunning}
-            className="h-9 rounded-md border border-emerald-700 bg-emerald-700 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
+            onClick={onConnectNodes}
+            className="h-9 rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white"
           >
-            {flowRunning ? "运行中" : "运行"}
+            连接
           </button>
-          <button
-            type="button"
-            onClick={onAddNode}
-            className="h-9 rounded-md border border-slate-900 bg-white px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-900"
-          >
-            添加节点
-          </button>
+          <input
+            value={edgeConditionDraft}
+            onChange={(event) => onEdgeConditionDraftChange(event.target.value)}
+            className="h-9 min-w-60 flex-1 rounded-md border border-slate-300 bg-white px-2 font-mono text-xs outline-none focus:border-slate-900"
+            placeholder='{"path":"$.condition","equals":true}'
+          />
         </div>
-      </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-        <select
-          value={edgeSource}
-          onChange={(event) => onEdgeSourceChange(event.target.value)}
-          className="h-9 min-w-36 rounded-md border border-slate-300 bg-white px-2 text-sm"
+        <div
+          data-flow-canvas-viewport
+          className="relative min-h-0 flex-1 overflow-hidden rounded-md border border-slate-300 bg-slate-50"
         >
-          {graph.nodes.map((node) => (
-            <option key={node.id} value={node.id}>
-              {node.title}
-            </option>
-          ))}
-        </select>
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
-          到
-        </span>
-        <select
-          value={edgeTarget}
-          onChange={(event) => onEdgeTargetChange(event.target.value)}
-          className="h-9 min-w-36 rounded-md border border-slate-300 bg-white px-2 text-sm"
-        >
-          {graph.nodes.map((node) => (
-            <option key={node.id} value={node.id}>
-              {node.title}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={onConnectNodes}
-          className="h-9 rounded-md border border-slate-900 bg-slate-900 px-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white"
-        >
-          连接
-        </button>
-        <input
-          value={edgeConditionDraft}
-          onChange={(event) => onEdgeConditionDraftChange(event.target.value)}
-          className="h-9 min-w-60 flex-1 rounded-md border border-slate-300 bg-white px-2 font-mono text-xs outline-none focus:border-slate-900"
-          placeholder='{"path":"$.condition","equals":true}'
-        />
-      </div>
-
-      <div
-        data-flow-canvas-viewport
-        className="relative h-[min(62vh,720px)] min-h-[420px] overflow-hidden rounded-md border border-slate-300 bg-slate-50"
-      >
         <ReactFlowProvider>
           <ReactFlow
             key={canvasSyncKey}
@@ -1180,7 +1255,7 @@ function FlowEditor({
             />
           </ReactFlow>
         </ReactFlowProvider>
-      </div>
+        </div>
       </div>
 
       <FlowInspector
@@ -1190,6 +1265,7 @@ function FlowEditor({
         selectedNodeCount={selectedNodeIds.length}
         selectedNodeRun={selectedNodeRun}
         activeRun={activeRun}
+        mode={inspectorMode}
         runs={runs}
         flow={graph.flow}
         inputDraft={inputDraft}
@@ -1199,6 +1275,7 @@ function FlowEditor({
         savingEdge={savingEdge}
         onInputDraftChange={onInputDraftChange}
         onRunFlow={onRunFlow}
+        onModeChange={setInspectorMode}
         onSelectRun={onSelectRun}
         onSaveFlow={onSaveFlow}
         onArchiveFlow={onArchiveFlow}
@@ -1345,6 +1422,7 @@ function FlowInspector({
   selectedNodeCount,
   selectedNodeRun,
   activeRun,
+  mode,
   runs,
   flow,
   inputDraft,
@@ -1354,6 +1432,7 @@ function FlowInspector({
   savingEdge,
   onInputDraftChange,
   onRunFlow,
+  onModeChange,
   onSelectRun,
   onSaveFlow,
   onArchiveFlow,
@@ -1369,6 +1448,7 @@ function FlowInspector({
   selectedNodeCount: number;
   selectedNodeRun: FlowNodeRun | null;
   activeRun: FlowRunWithNodes | null;
+  mode: "config" | "detail";
   runs: FlowRun[];
   flow: FlowDefinition;
   inputDraft: string;
@@ -1378,6 +1458,7 @@ function FlowInspector({
   savingEdge: boolean;
   onInputDraftChange: (value: string) => void;
   onRunFlow: () => void;
+  onModeChange: (mode: "config" | "detail") => void;
   onSelectRun: (runId: string) => void;
   onSaveFlow: (params: { title: string; description: string | null }) => void;
   onArchiveFlow: () => void;
@@ -1391,7 +1472,6 @@ function FlowInspector({
   onDeleteEdge: (edgeId: string) => void;
   onOpenNodeDetail: (nodeId: string) => void;
 }) {
-  const [mode, setMode] = useState<"config" | "detail">("config");
   const selectedEdgeSource = selectedEdge
     ? nodes.find((node) => node.id === selectedEdge.sourceNodeId)
     : undefined;
@@ -1400,7 +1480,10 @@ function FlowInspector({
     : undefined;
 
   return (
-    <aside className="min-h-0 overflow-y-auto border-l border-slate-200 pl-4">
+    <aside
+      data-flow-inspector
+      className="h-full min-h-0 overflow-y-auto border-t border-slate-200 pt-4 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
+    >
       <div className="space-y-4">
         <FlowDetailsForm
           key={flow.id}
@@ -1413,7 +1496,7 @@ function FlowInspector({
         <div className="grid grid-cols-2 gap-1 rounded-md border border-slate-200 bg-slate-50 p-1">
           <button
             type="button"
-            onClick={() => setMode("config")}
+            onClick={() => onModeChange("config")}
             className={[
               "h-8 rounded text-sm font-medium",
               mode === "config" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
@@ -1423,7 +1506,7 @@ function FlowInspector({
           </button>
           <button
             type="button"
-            onClick={() => setMode("detail")}
+            onClick={() => onModeChange("detail")}
             className={[
               "h-8 rounded text-sm font-medium",
               mode === "detail" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
@@ -1439,7 +1522,7 @@ function FlowInspector({
             <button
               type="button"
               onClick={() => {
-                setMode("detail");
+                onModeChange("detail");
                 onRunFlow();
               }}
               disabled={running}
@@ -1464,7 +1547,7 @@ function FlowInspector({
                 key={run.id}
                 type="button"
                 onClick={() => {
-                  setMode("detail");
+                  onModeChange("detail");
                   onSelectRun(run.id);
                 }}
                 className={[
@@ -1499,6 +1582,7 @@ function FlowInspector({
           <FlowRunDetailPanel
             activeRun={activeRun}
             nodes={nodes}
+            selectedNodeId={selectedNode?.id ?? null}
           />
         )}
 
@@ -1606,9 +1690,11 @@ function FlowInspector({
 function FlowRunDetailPanel({
   activeRun,
   nodes,
+  selectedNodeId,
 }: {
   activeRun: FlowRunWithNodes | null;
   nodes: FlowNode[];
+  selectedNodeId: string | null;
 }) {
   if (!activeRun) {
     return (
@@ -1621,6 +1707,12 @@ function FlowRunDetailPanel({
   const nodeRunByNodeId = new Map(
     activeRun.nodeRuns.map((nodeRun) => [nodeRun.nodeId, nodeRun]),
   );
+  const orderedNodes = selectedNodeId
+    ? [
+        ...nodes.filter((node) => node.id === selectedNodeId),
+        ...nodes.filter((node) => node.id !== selectedNodeId),
+      ]
+    : nodes;
 
   return (
     <section className="rounded-md border border-slate-200 p-3">
@@ -1647,7 +1739,7 @@ function FlowRunDetailPanel({
           </div>
         )}
         <div className="space-y-3">
-          {nodes.map((node) => {
+          {orderedNodes.map((node) => {
             const nodeRun = nodeRunByNodeId.get(node.id) ?? null;
             const state = getNodeVisualState(nodeRun, activeRun.run.status);
             return (
@@ -1659,6 +1751,7 @@ function FlowRunDetailPanel({
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-slate-900">
                       {node.title}
+                      {node.id === selectedNodeId ? " · 当前节点" : ""}
                     </div>
                     <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                       {nodeTypeLabel(node.type)}
@@ -1897,12 +1990,12 @@ function TranscriptBlock({
           {error}
         </div>
       ) : (
-        <div className="max-h-80 space-y-2 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+        <div className="max-h-96 space-y-3 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
           {messages.map((message) => (
             <div
               key={message.id}
               className={[
-                "rounded-md border p-2",
+                "rounded-md border p-2.5",
                 message.role === "assistant"
                   ? "border-emerald-100 bg-emerald-50/50"
                   : "border-slate-200 bg-white",
@@ -1911,8 +2004,18 @@ function TranscriptBlock({
               <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                 {messageRoleLabel(message.role)}
               </div>
-              <div className="whitespace-pre-wrap text-xs leading-5 text-slate-800">
-                {messageToText(message)}
+              <div className="space-y-2">
+                {message.parts.map((part, index) => (
+                  <MessagePartBlock
+                    key={`${message.id}-${index}`}
+                    part={part}
+                  />
+                ))}
+                {message.parts.length === 0 && (
+                  <div className="text-xs leading-5 text-slate-500">
+                    无可展示内容
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -1924,6 +2027,61 @@ function TranscriptBlock({
         </div>
       )}
     </div>
+  );
+}
+
+function MessagePartBlock({ part }: { part: UIMessage["parts"][number] }) {
+  if (part.type === "reasoning") {
+    return null;
+  }
+  if (part.type === "text") {
+    return (
+      <div className="whitespace-pre-wrap text-xs leading-5 text-slate-800">
+        {(part as { text: string }).text || "无可展示内容"}
+      </div>
+    );
+  }
+
+  const maybe = part as Record<string, unknown>;
+  if (typeof maybe.type === "string" && maybe.type.startsWith("tool-")) {
+    const toolName = maybe.type.replace(/^tool-/, "");
+    return (
+      <div className="rounded-md border border-slate-200 bg-white p-2">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+            工具 · {toolName}
+          </div>
+          <span
+            className={[
+              "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+              maybe.errorText
+                ? "bg-rose-50 text-rose-700"
+                : maybe.state === "output-available"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-slate-100 text-slate-600",
+            ].join(" ")}
+          >
+            {toolStateLabel(maybe.state)}
+          </span>
+        </div>
+        <div className="space-y-2">
+          <JsonBlock
+            label="工具输入"
+            value={maybe.input ?? null}
+            heightClassName="max-h-32"
+          />
+          <JsonBlock
+            label={maybe.errorText ? "工具错误" : "工具输出"}
+            value={maybe.errorText ?? maybe.output ?? null}
+            heightClassName="max-h-40"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <JsonBlock label="消息片段" value={maybe} heightClassName="max-h-40" />
   );
 }
 
@@ -2323,35 +2481,6 @@ function arraysEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function messageToText(message: UIMessage): string {
-  const text = message.parts
-    .map(messagePartToText)
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  return text || "无可展示内容";
-}
-
-function messagePartToText(part: UIMessage["parts"][number]): string {
-  if (part.type === "text") {
-    return (part as { text: string }).text;
-  }
-  if (part.type === "reasoning") {
-    return "";
-  }
-  const maybe = part as Record<string, unknown>;
-  if (typeof maybe.type === "string" && maybe.type.startsWith("tool-")) {
-    return stableStringifyForUi({
-      type: maybe.type,
-      state: maybe.state,
-      input: maybe.input,
-      output: maybe.output,
-      errorText: maybe.errorText,
-    });
-  }
-  return stableStringifyForUi(maybe);
-}
-
 function parseConfigJson(value: string, label: string): unknown {
   try {
     return JSON.parse(value);
@@ -2545,12 +2674,12 @@ function nodeStateLabel(
   state: FlowNodeVisualState,
   rawStatus: FlowRun["status"] | null,
 ): string {
-  if (state === "active") return "active";
-  if (state === "done") return "done";
-  if (state === "pending") return "pending";
-  if (state === "failed") return "failed";
-  if (state === "skipped") return "skipped";
-  return rawStatus ? runStatusLabel(rawStatus) : "idle";
+  if (state === "active") return "执行中";
+  if (state === "done") return "已完成";
+  if (state === "pending") return "等待中";
+  if (state === "failed") return "失败";
+  if (state === "skipped") return "未执行";
+  return rawStatus ? runStatusLabel(rawStatus) : "未运行";
 }
 
 function messageRoleLabel(role: UIMessage["role"]): string {
@@ -2560,10 +2689,12 @@ function messageRoleLabel(role: UIMessage["role"]): string {
   return role;
 }
 
-function stableStringifyForUi(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+function toolStateLabel(state: unknown): string {
+  if (state === "input-available") return "已发起";
+  if (state === "input-streaming") return "输入中";
+  if (state === "output-available") return "已返回";
+  if (state === "output-error") return "失败";
+  if (state === "approval-requested") return "等待审批";
+  if (typeof state === "string" && state.trim()) return state;
+  return "未知";
 }

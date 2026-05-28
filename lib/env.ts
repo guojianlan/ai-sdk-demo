@@ -48,7 +48,7 @@ const gatewayModelId =
   "gemini-2.5-flash";
 
 const gatewayImageModelId =
-  pickString(process.env.OPENAI_COMPAT_IMAGE_MODEL) ?? "gpt-image-1";
+  pickString(process.env.OPENAI_COMPAT_IMAGE_MODEL) ?? "gpt-image-2";
 
 /**
  * Reasoning effort（OpenAI gpt-5 系 / o1 系列等推理模型支持的

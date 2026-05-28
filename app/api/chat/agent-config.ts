@@ -201,6 +201,7 @@ export const projectEngineerCallOptionsSchema = z.object({
    * 这些 mutating tool。
    */
   planMode: z.boolean().default(false),
+  autoApproveTools: z.boolean().default(false),
   /**
    * 当前会话 chatId —— 仅用于 hook payload 的 sessionId 字段透传（log 行能带上
    * "哪个 chat 调的 tool"）。spawn_agent 把它带入 subagent 的 experimental_context，
@@ -267,6 +268,7 @@ export function createProjectEngineerAgent(params: {
       shellApprovalPolicy: options.shellApprovalPolicy,
       permissionMode: options.permissionMode,
       planMode: options.planMode,
+      __autoApproveTools: options.autoApproveTools === true,
       // P9 后续：把 chatId 落进 experimental_context，spawn_agent 透传给子 agent
       // 当 hook sessionId 使。可选字段，缺了不影响行为。
       __chatId: options.chatId,

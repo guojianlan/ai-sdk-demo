@@ -145,6 +145,15 @@ function isSubagentCtx(ctx: unknown): boolean {
   );
 }
 
+function isServerAutoApproveCtx(ctx: unknown): boolean {
+  return (
+    typeof ctx === "object" &&
+    ctx !== null &&
+    "__autoApproveTools" in ctx &&
+    (ctx as { __autoApproveTools: unknown }).__autoApproveTools === true
+  );
+}
+
 function buildAclDenyError(
   toolName: string,
   ruleContent: string | undefined,
@@ -223,8 +232,11 @@ export function approvedTool<Schema extends FlexibleSchema>(
       if (decision === "allow") return false;
       if (decision === "ask") return true;
       // decision === null —— ACL 没规则匹配
-      // 1. 子 agent 上下文：直接跳审批（没 UI 弹卡，ACL deny 已确认放行）
-      if (isSubagentCtx(experimental_context)) {
+      // 1. 子 agent / flow node 上下文：直接跳审批（没 UI 弹卡，ACL deny 已确认放行）
+      if (
+        isSubagentCtx(experimental_context) ||
+        isServerAutoApproveCtx(experimental_context)
+      ) {
         return false;
       }
       // 2. 看 PermissionMode 是不是该自动放行

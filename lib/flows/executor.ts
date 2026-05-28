@@ -339,6 +339,9 @@ async function executeAgentNode(
     nodeRunId: context.nodeRunId,
     node,
   });
+  updateFlowNodeRun(context.nodeRunId, {
+    transcriptThreadId,
+  });
   const userMessage: UIMessage = {
     id: randomUUID(),
     role: "user",
@@ -368,6 +371,7 @@ async function executeAgentNode(
         shellApprovalPolicy: "never",
         permissionMode: config.permissionMode,
         planMode: false,
+        autoApproveTools: true,
         conversationSummary: null,
         skills: await getSkills(),
         hookContexts: [],

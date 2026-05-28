@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost"],
+  turbopack: {
+    root: process.cwd(),
+  },
   // better-sqlite3 是 native module（C++ binding），不能被 Next.js bundler
   // 打包，必须在服务端运行时直接 require。Next.js 16 给的开关。
   //

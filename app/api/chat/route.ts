@@ -398,6 +398,7 @@ export async function POST(request: Request) {
             shellApprovalPolicy: body.shellApprovalPolicy,
             permissionMode,
             planMode,
+            autoApproveTools: false,
             conversationSummary: agentSummary,
             skills,
             hookContexts,
