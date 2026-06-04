@@ -1,125 +1,22 @@
-# Hook 下一步计划
+# Native Flow Canvas Product Plan
 
-## 目标
+Summary: Turn the current Flow canvas from an agent-node chain into a native workflow product that can run repeatable, observable, human-approved automations. The first real use case is a Juejin Frontend intake flow that discovers articles, ingests useful sources into `/Users/apple/Desktop/project/document`, and asks for approval before touching higher-level wiki/topic content.
 
-把 hook 从“只能引用代码里注册好的 hook factory”，扩展成 Codex/Claude 风格的项目级 command hook：
+Context: The current Flow system already has persisted flows, nodes, edges, runs, node runs, event logs, a React Flow editor, and an executor that walks from `start` through connected nodes. The runtime currently supports only `start`, `agent`, `prompt`, `transform`, `condition`, and `end`; agent/prompt nodes call the existing chat agent loop with workspace tools. This is enough for flexible agent orchestration, but not enough for stable arbitrary workflow automation because batch item state, dedicated web/file nodes, approval gates, durable artifacts, strict schemas, retry, pause/resume, and reusable node registration are missing.
 
-1. 项目 `.agents/settings.json` 可以按事件配置 shell command。
-2. runtime 在服务端命中事件时执行 command，并把事件 JSON 写入 stdin。
-3. command 的 stdout JSON / stderr / exit code 决定是否继续、阻断、或给模型追加上下文。
-4. `Stop` 事件用于“LLM 准备结束这一轮时跑最终检查”，例如 `npm run lint` / typecheck。
+System Impact: The source of truth should remain the persisted Flow graph plus run/event tables, but the graph needs to evolve from hard-coded node types into a node registry with typed capabilities. Long-running business state should be represented as run artifacts and item records rather than hidden inside an agent transcript. Human approval should become a first-class run state, not a prompt convention. This keeps the canvas visual, auditable, resumable, and safe for workflows that write into other workspaces.
 
-## 当前 hook 使用模式
+Approach: Implement the product in phases. First document the architecture and product direction. Then introduce a node registry and artifact/item model behind existing behavior. After that, add purpose-built nodes for browser extraction, foreach/batch processing, file patching, document ingest, and human approval. Use the Juejin Frontend intake workflow as the proving ground, but keep the platform generic enough for other teams and creators.
 
-当前 hook 分成两条能力：
+Changes:
+- `docs/native-flow-canvas-product-design.md` - New product and architecture design covering product goal, user model, runtime gaps, target node catalog, Juejin reference workflow, data model, execution lifecycle, safety model, and phased roadmap.
+- `PLAN.md` - Current execution plan for the native Flow canvas product work.
+- Future code phase: `lib/flows/node-registry.ts` - Add typed node registry and move current node execution behavior into registered handlers.
+- Future code phase: `lib/persistence/flows.ts` - Add artifacts/items/approval run state when implementation begins.
+- Future code phase: `lib/flows/executor.ts` - Move from hard-coded switch execution toward registry dispatch, real retry, pause/resume, and item-aware batch execution.
+- Future code phase: `app/_components/FlowWorkspace.tsx` - Replace fixed node menu/config forms with registry-driven node categories and forms.
 
-1. **registered hook**：hook 逻辑在代码里实现并注册到 `lib/hooks/settings-loader.ts`，项目通过 `.agents/settings.json` 按 name 启用。
-2. **command hook**：项目 `.agents/settings.json` 直接声明 command，由 runtime 在服务端执行。
-
-command hook 只从项目级 settings 加载，不从用户全局 settings 继承。原因是 command 会执行本地命令，必须由当前项目显式 opt-in，不能把 `npm run lint` 这类 Node 项目命令全局注入到所有仓库。
-
-## 已落地的执行链路
-
-- `lib/permissions/types.ts`：settings schema 支持 Codex 风格 matcher group：
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "npm run lint",
-            "timeout": 120,
-            "statusMessage": "Running lint before completion"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-- `lib/permissions/settings.ts`：新增 `loadProjectSettings(cwd)`，只读取项目层级 `.agents/settings.json`。
-- `lib/hooks/command.ts`：执行 command，stdin 输入事件 JSON，解析 stdout JSON；命令失败会返回 `deny` 和 additional context。
-- `lib/hooks/settings-loader.ts`：新增 `buildCommandHookRegistryFromProjectSettings(settings, { cwd })`，只注册 command matcher group。
-- `app/api/chat/route.ts`：`SessionStart` / `UserPromptSubmit` 阶段把项目 command hooks 加入 registry。
-- `app/workflows/chat.ts`：工具阶段加入项目 command hooks；当模型准备 stop 时触发 `Stop` hooks，如果 hook block，就把反馈作为 hook context 送回下一轮 LLM。
-- `lib/subagents/sub-agent.ts`：子 agent 工具调用也接入项目 command hooks，避免父/子 agent hook 口径不一致。
-
-## 典型配置
-
-### Stop 时跑 lint
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "npm run lint",
-            "timeout": 120,
-            "statusMessage": "Running lint before completion"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-### 文件修改后记录或检查
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "^(write|edit)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node .agents/hooks/post-edit.mjs",
-            "timeout": 30
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-## command 输入/输出约定
-
-输入：runtime 把事件 JSON 写入 command stdin。基础字段包括：
-
-- `session_id`
-- `cwd`
-- `hook_event_name`
-- tool 事件还有 `tool_name` / `tool_input` / `tool_response`
-- `Stop` 事件还有 `finish_reason` / `step` / `last_assistant_message`
-
-输出：command stdout 可以返回 JSON：
-
-```json
-{
-  "decision": "block",
-  "reason": "lint failed, fix before final response",
-  "hookSpecificOutput": {
-    "additionalContext": "Run npm run lint again after fixing."
-  }
-}
-```
-
-当前实现里非 0 exit code 也会 block，并把 stderr/stdout 作为反馈回灌给模型。这是为了让 `npm run lint` / typecheck 这类命令不需要额外 wrapper 就能用于 `Stop`。
-
-## 后续可选增强
-
-- 增加 command hook 信任态：记录 command hash，配置变化后要求用户重新确认。
-- 暴露 `GET /api/hooks/catalog`：返回已注册 hook 名称、事件类型、默认 matcher、说明。
-- 暴露 `GET/PUT /api/hooks/settings`：读取和保存 `.agents/settings.json` 的 hooks 配置。
-- 在 UI 里加 hook 测试按钮：输入 event/payload，预览哪些 hook 会命中。
-- 支持 `PostToolUse additionalContexts` 的调试展示，帮助确认 context 是否进入下一步模型调用。
+Verification:
+- Documentation phase: read the new design end to end and confirm it matches the current code paths and product direction.
+- First implementation phase: run `npm run lint`; add targeted unit tests for registry dispatch, condition routing, artifact persistence, and item-state transitions.
+- End-to-end product check: create a Juejin Frontend intake flow, run it in dry-run mode, inspect candidates/artifacts, approve selected updates, and verify only approved files in `/Users/apple/Desktop/project/document` are changed.

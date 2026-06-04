@@ -69,6 +69,7 @@ export type ChatRunOptions = {
   conversationSummary: string | null;
   skills: SkillMetadata[];
   hookContexts: string[];
+  stopAfterCompletedToolCalls?: boolean;
 };
 
 type ChatChunkWriter = {
@@ -250,8 +251,9 @@ export async function runChatAgentLoop(params: {
 
     finalFinishReason = result.finishReason;
     const responseParts = result.responseMessage?.parts ?? [];
+    const hasCompletedTools = hasCompletedToolCalls(responseParts);
     const isToolCallContinuation =
-      result.finishReason === "tool-calls" || hasCompletedToolCalls(responseParts);
+      result.finishReason === "tool-calls" || hasCompletedTools;
     const needsPause = shouldPauseForToolInteraction(responseParts);
 
     console.log(
@@ -259,6 +261,9 @@ export async function runChatAgentLoop(params: {
     );
 
     if (result.aborted) break;
+    if (options.stopAfterCompletedToolCalls && hasCompletedTools) {
+      break;
+    }
     if (!isToolCallContinuation) {
       const stopContexts = await runStopHooksForStep(
         options,

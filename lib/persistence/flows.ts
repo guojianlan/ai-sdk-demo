@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  getDefaultFlowNodeConfig,
+  getDefaultFlowNodeTitle,
+  getFlowNodeDefinition,
+  isFlowNodeType,
+} from "@/lib/flows/node-registry";
+import { getFlowTemplate, type FlowTemplateId } from "@/lib/flows/templates";
 import { getDb } from "./db";
 
 export type FlowDefinition = {
@@ -13,13 +20,7 @@ export type FlowDefinition = {
   archivedAt: number | null;
 };
 
-export type FlowNodeType =
-  | "start"
-  | "agent"
-  | "prompt"
-  | "transform"
-  | "condition"
-  | "end";
+export type FlowNodeType = string;
 
 export type FlowNode = {
   id: string;
@@ -48,6 +49,19 @@ export type FlowRunStatus =
   | "succeeded"
   | "failed"
   | "cancelled"
+  | "waiting_for_approval"
+  | "skipped";
+
+export type FlowItemStatus =
+  | "discovered"
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped_duplicate"
+  | "skipped_low_value"
+  | "waiting_for_approval"
+  | "applied"
   | "skipped";
 
 export type FlowRun = {
@@ -56,6 +70,7 @@ export type FlowRun = {
   status: FlowRunStatus;
   input: unknown;
   output: unknown | null;
+  graphSnapshot: FlowRunGraphSnapshot | null;
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
@@ -81,9 +96,63 @@ export type FlowWithGraph = {
   edges: FlowEdge[];
 };
 
+export type FlowRunGraphSnapshot = FlowWithGraph & {
+  version: 1;
+  capturedAt: number;
+};
+
 export type FlowRunWithNodes = {
   run: FlowRun;
   nodeRuns: FlowNodeRun[];
+  artifacts: FlowArtifact[];
+  items: FlowItem[];
+};
+
+export type FlowRunEvent = {
+  id: string;
+  flowRunId: string;
+  nodeRunId: string | null;
+  sequence: number;
+  type: string;
+  payload: unknown;
+  createdAt: number;
+};
+
+export type FlowArtifactKind =
+  | "json"
+  | "markdown"
+  | "text"
+  | "image"
+  | "html"
+  | "patch"
+  | "log";
+
+export type FlowArtifact = {
+  id: string;
+  flowRunId: string;
+  nodeRunId: string | null;
+  itemId: string | null;
+  kind: FlowArtifactKind;
+  title: string;
+  path: string | null;
+  mediaType: string | null;
+  metadata: unknown;
+  createdAt: number;
+};
+
+export type FlowItem = {
+  id: string;
+  flowRunId: string;
+  nodeRunId: string | null;
+  externalId: string | null;
+  status: FlowItemStatus;
+  title: string;
+  input: unknown;
+  output: unknown | null;
+  metadata: unknown;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
 };
 
 type FlowRow = {
@@ -125,6 +194,7 @@ type FlowRunRow = {
   status: string;
   input_json: string;
   output_json: string | null;
+  graph_snapshot_json: string | null;
   error: string | null;
   started_at: number;
   finished_at: number | null;
@@ -142,6 +212,44 @@ type FlowNodeRunRow = {
   error: string | null;
   started_at: number;
   finished_at: number | null;
+};
+
+type FlowRunEventRow = {
+  id: string;
+  flow_run_id: string;
+  node_run_id: string | null;
+  sequence: number;
+  type: string;
+  payload_json: string;
+  created_at: number;
+};
+
+type FlowArtifactRow = {
+  id: string;
+  flow_run_id: string;
+  node_run_id: string | null;
+  item_id: string | null;
+  kind: string;
+  title: string;
+  path: string | null;
+  media_type: string | null;
+  metadata_json: string;
+  created_at: number;
+};
+
+type FlowItemRow = {
+  id: string;
+  flow_run_id: string;
+  node_run_id: string | null;
+  external_id: string | null;
+  status: string;
+  title: string;
+  input_json: string;
+  output_json: string | null;
+  metadata_json: string;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
 };
 
 function rowToFlow(row: FlowRow): FlowDefinition {
@@ -189,6 +297,9 @@ function rowToFlowRun(row: FlowRunRow): FlowRun {
     status: normalizeRunStatus(row.status),
     input: parseJson(row.input_json, {}),
     output: row.output_json ? parseJson(row.output_json, null) : null,
+    graphSnapshot: row.graph_snapshot_json
+      ? (parseJson(row.graph_snapshot_json, null) as FlowRunGraphSnapshot | null)
+      : null,
     error: row.error,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -208,6 +319,50 @@ function rowToNodeRun(row: FlowNodeRunRow): FlowNodeRun {
     error: row.error,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+  };
+}
+
+function rowToFlowRunEvent(row: FlowRunEventRow): FlowRunEvent {
+  return {
+    id: row.id,
+    flowRunId: row.flow_run_id,
+    nodeRunId: row.node_run_id,
+    sequence: row.sequence,
+    type: row.type,
+    payload: parseJson(row.payload_json, {}),
+    createdAt: row.created_at,
+  };
+}
+
+function rowToFlowArtifact(row: FlowArtifactRow): FlowArtifact {
+  return {
+    id: row.id,
+    flowRunId: row.flow_run_id,
+    nodeRunId: row.node_run_id,
+    itemId: row.item_id,
+    kind: normalizeArtifactKind(row.kind),
+    title: row.title,
+    path: row.path,
+    mediaType: row.media_type,
+    metadata: parseJson(row.metadata_json, {}),
+    createdAt: row.created_at,
+  };
+}
+
+function rowToFlowItem(row: FlowItemRow): FlowItem {
+  return {
+    id: row.id,
+    flowRunId: row.flow_run_id,
+    nodeRunId: row.node_run_id,
+    externalId: row.external_id,
+    status: normalizeFlowItemStatus(row.status),
+    title: row.title,
+    input: parseJson(row.input_json, {}),
+    output: row.output_json ? parseJson(row.output_json, null) : null,
+    metadata: parseJson(row.metadata_json, {}),
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -283,6 +438,85 @@ export function createFlow(opts: {
   const graph = getFlowWithGraph(flowId);
   if (!graph) {
     throw new Error("Created flow could not be loaded.");
+  }
+  return graph;
+}
+
+export function createFlowFromTemplate(opts: {
+  templateId: FlowTemplateId;
+  title?: string | null;
+  workspaceRoot: string;
+  workspaceName?: string | null;
+}): FlowWithGraph {
+  const template = getFlowTemplate(opts.templateId);
+  if (!template) {
+    throw new Error("Flow template not found.");
+  }
+
+  const now = Date.now();
+  const flowId = randomUUID();
+  const nodeIdsByKey = new Map<string, string>();
+  const db = getDb();
+
+  for (const node of template.nodes) {
+    nodeIdsByKey.set(node.key, randomUUID());
+  }
+
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO flows
+         (id, title, description, workspace_root, workspace_name,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      flowId,
+      opts.title?.trim() || template.title,
+      template.description,
+      opts.workspaceRoot,
+      opts.workspaceName ?? null,
+      now,
+      now,
+    );
+
+    for (const node of template.nodes) {
+      const nodeId = nodeIdsByKey.get(node.key);
+      if (!nodeId) {
+        throw new Error(`Template node id missing: ${node.key}`);
+      }
+      insertNode({
+        id: nodeId,
+        flowId,
+        type: node.type,
+        title: node.title.trim() || defaultNodeTitle(node.type),
+        x: node.position.x,
+        y: node.position.y,
+        config: node.config ?? defaultNodeConfig(node.type),
+        now,
+      });
+    }
+
+    for (const edge of template.edges) {
+      const sourceNodeId = nodeIdsByKey.get(edge.source);
+      const targetNodeId = nodeIdsByKey.get(edge.target);
+      if (!sourceNodeId || !targetNodeId) {
+        throw new Error(
+          `Template edge references missing node: ${edge.source} -> ${edge.target}`,
+        );
+      }
+      insertEdge({
+        id: randomUUID(),
+        flowId,
+        sourceNodeId,
+        targetNodeId,
+        condition: edge.condition ?? null,
+        now,
+      });
+    }
+  })();
+
+  const graph = getFlowWithGraph(flowId);
+  if (!graph) {
+    throw new Error("Created flow template could not be loaded.");
   }
   return graph;
 }
@@ -420,7 +654,10 @@ export function deleteFlowNode(opts: {
   if (current.flowId !== opts.flowId) {
     throw new Error("Flow node not found.");
   }
-  if (current.type === "start" || current.type === "end") {
+  if (
+    isFlowNodeType(current.type, "core.start") ||
+    isFlowNodeType(current.type, "core.end")
+  ) {
     throw new Error("Start and End nodes cannot be deleted.");
   }
 
@@ -538,22 +775,28 @@ export function createFlowRun(opts: {
   flowId: string;
   input: unknown;
   status?: FlowRunStatus;
+  graphSnapshot?: FlowRunGraphSnapshot | null;
 }): FlowRun {
   assertFlowExists(opts.flowId);
   const now = Date.now();
   const id = randomUUID();
+  const graphSnapshot =
+    opts.graphSnapshot === undefined
+      ? captureFlowGraphSnapshot(opts.flowId, now)
+      : opts.graphSnapshot;
   getDb()
     .prepare(
       `INSERT INTO flow_runs
-         (id, flow_id, status, input_json, output_json, error, started_at,
-          finished_at)
-       VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)`,
+         (id, flow_id, status, input_json, output_json, graph_snapshot_json,
+          error, started_at, finished_at)
+       VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, NULL)`,
     )
     .run(
       id,
       opts.flowId,
       opts.status ?? "running",
       JSON.stringify(opts.input ?? {}),
+      graphSnapshot == null ? null : JSON.stringify(graphSnapshot),
       now,
     );
   touchFlow(opts.flowId, now);
@@ -690,7 +933,194 @@ export function getFlowRunWithNodes(runId: string): FlowRunWithNodes | null {
   return {
     run: rowToFlowRun(runRow),
     nodeRuns: nodeRows.map(rowToNodeRun),
+    artifacts: listFlowArtifacts(runId),
+    items: listFlowItems(runId),
   };
+}
+
+export function appendFlowRunEvent(opts: {
+  flowRunId: string;
+  nodeRunId?: string | null;
+  type: string;
+  payload?: unknown;
+  createdAt?: number;
+}): FlowRunEvent {
+  assertFlowRunExists(opts.flowRunId);
+  const db = getDb();
+  const now = opts.createdAt ?? Date.now();
+  const id = randomUUID();
+  const row = db
+    .prepare(
+      `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+       FROM flow_run_events
+       WHERE flow_run_id = ?`,
+    )
+    .get(opts.flowRunId) as { next_sequence: number } | undefined;
+  const sequence = row?.next_sequence ?? 1;
+  db.prepare(
+    `INSERT INTO flow_run_events
+       (id, flow_run_id, node_run_id, sequence, type, payload_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    opts.flowRunId,
+    opts.nodeRunId ?? null,
+    sequence,
+    opts.type,
+    JSON.stringify(opts.payload ?? {}),
+    now,
+  );
+  return getFlowRunEvent(id);
+}
+
+export function listFlowRunEvents(runId: string): FlowRunEvent[] {
+  assertFlowRunExists(runId);
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM flow_run_events
+       WHERE flow_run_id = ?
+       ORDER BY sequence ASC`,
+    )
+    .all(runId) as FlowRunEventRow[];
+  return rows.map(rowToFlowRunEvent);
+}
+
+export function createFlowArtifact(opts: {
+  flowRunId: string;
+  nodeRunId?: string | null;
+  itemId?: string | null;
+  kind: FlowArtifactKind;
+  title: string;
+  path?: string | null;
+  mediaType?: string | null;
+  metadata?: unknown;
+  createdAt?: number;
+}): FlowArtifact {
+  assertFlowRunExists(opts.flowRunId);
+  if (opts.nodeRunId) {
+    assertFlowNodeRunExists(opts.nodeRunId);
+  }
+  const now = opts.createdAt ?? Date.now();
+  const id = randomUUID();
+  getDb()
+    .prepare(
+      `INSERT INTO flow_artifacts
+         (id, flow_run_id, node_run_id, item_id, kind, title, path,
+          media_type, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      id,
+      opts.flowRunId,
+      opts.nodeRunId ?? null,
+      opts.itemId ?? null,
+      opts.kind,
+      opts.title.trim() || defaultArtifactTitle(opts.kind),
+      opts.path ?? null,
+      opts.mediaType ?? null,
+      JSON.stringify(opts.metadata ?? {}),
+      now,
+    );
+  return getFlowArtifact(id);
+}
+
+export function listFlowArtifacts(runId: string): FlowArtifact[] {
+  assertFlowRunExists(runId);
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM flow_artifacts
+       WHERE flow_run_id = ?
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(runId) as FlowArtifactRow[];
+  return rows.map(rowToFlowArtifact);
+}
+
+export function createFlowItem(opts: {
+  flowRunId: string;
+  nodeRunId?: string | null;
+  externalId?: string | null;
+  status?: FlowItemStatus;
+  title: string;
+  input?: unknown;
+  output?: unknown | null;
+  metadata?: unknown;
+  error?: string | null;
+  createdAt?: number;
+}): FlowItem {
+  assertFlowRunExists(opts.flowRunId);
+  if (opts.nodeRunId) {
+    assertFlowNodeRunExists(opts.nodeRunId);
+  }
+  const now = opts.createdAt ?? Date.now();
+  const id = randomUUID();
+  getDb()
+    .prepare(
+      `INSERT INTO flow_items
+         (id, flow_run_id, node_run_id, external_id, status, title, input_json,
+          output_json, metadata_json, error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      id,
+      opts.flowRunId,
+      opts.nodeRunId ?? null,
+      opts.externalId ?? null,
+      opts.status ?? "discovered",
+      opts.title.trim() || "Untitled item",
+      JSON.stringify(opts.input ?? {}),
+      stringifyNullable(opts.output ?? null),
+      JSON.stringify(opts.metadata ?? {}),
+      opts.error ?? null,
+      now,
+      now,
+    );
+  return getFlowItem(id);
+}
+
+export function updateFlowItem(
+  itemId: string,
+  patch: {
+    status?: FlowItemStatus;
+    output?: unknown | null;
+    metadata?: unknown;
+    error?: string | null;
+    updatedAt?: number;
+  },
+): FlowItem {
+  const current = getFlowItem(itemId);
+  const now = patch.updatedAt ?? Date.now();
+  getDb()
+    .prepare(
+      `UPDATE flow_items
+       SET status = ?,
+           output_json = ?,
+           metadata_json = ?,
+           error = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(
+      patch.status ?? current.status,
+      stringifyNullable(patch.output === undefined ? current.output : patch.output),
+      JSON.stringify(patch.metadata === undefined ? current.metadata : patch.metadata),
+      patch.error === undefined ? current.error : patch.error,
+      now,
+      itemId,
+    );
+  return getFlowItem(itemId);
+}
+
+export function listFlowItems(runId: string): FlowItem[] {
+  assertFlowRunExists(runId);
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM flow_items
+       WHERE flow_run_id = ?
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .all(runId) as FlowItemRow[];
+  return rows.map(rowToFlowItem);
 }
 
 function insertNode(opts: {
@@ -788,6 +1218,30 @@ function getFlowRun(runId: string): FlowRun {
   return rowToFlowRun(row);
 }
 
+function getFlowRunEvent(eventId: string): FlowRunEvent {
+  const row = getDb()
+    .prepare(`SELECT * FROM flow_run_events WHERE id = ?`)
+    .get(eventId) as FlowRunEventRow | undefined;
+  if (!row) throw new Error("Flow run event not found.");
+  return rowToFlowRunEvent(row);
+}
+
+function getFlowArtifact(artifactId: string): FlowArtifact {
+  const row = getDb()
+    .prepare(`SELECT * FROM flow_artifacts WHERE id = ?`)
+    .get(artifactId) as FlowArtifactRow | undefined;
+  if (!row) throw new Error("Flow artifact not found.");
+  return rowToFlowArtifact(row);
+}
+
+function getFlowItem(itemId: string): FlowItem {
+  const row = getDb()
+    .prepare(`SELECT * FROM flow_items WHERE id = ?`)
+    .get(itemId) as FlowItemRow | undefined;
+  if (!row) throw new Error("Flow item not found.");
+  return rowToFlowItem(row);
+}
+
 function getFlowNodeRun(nodeRunId: string): FlowNodeRun {
   const row = getDb()
     .prepare(`SELECT * FROM flow_node_runs WHERE id = ?`)
@@ -810,6 +1264,13 @@ function assertFlowRunExists(runId: string) {
   if (!exists) throw new Error("Flow run not found.");
 }
 
+function assertFlowNodeRunExists(nodeRunId: string) {
+  const exists = getDb()
+    .prepare(`SELECT 1 FROM flow_node_runs WHERE id = ?`)
+    .get(nodeRunId);
+  if (!exists) throw new Error("Flow node run not found.");
+}
+
 function assertNodeInFlow(flowId: string, nodeId: string) {
   const exists = getDb()
     .prepare(`SELECT 1 FROM flow_nodes WHERE flow_id = ? AND id = ?`)
@@ -825,16 +1286,24 @@ function removeDefaultStartEndEdge(opts: {
   const source = getFlowNode(opts.sourceNodeId);
   const target = getFlowNode(opts.targetNodeId);
   const shouldRemoveDefault =
-    (source.type === "start" && target.type !== "end") ||
-    (source.type !== "start" && target.type === "end");
+    (isFlowNodeType(source.type, "core.start") &&
+      !isFlowNodeType(target.type, "core.end")) ||
+    (!isFlowNodeType(source.type, "core.start") &&
+      isFlowNodeType(target.type, "core.end"));
 
   if (!shouldRemoveDefault) return;
 
   const startNode = getDb()
-    .prepare(`SELECT * FROM flow_nodes WHERE flow_id = ? AND type = 'start'`)
+    .prepare(
+      `SELECT * FROM flow_nodes
+       WHERE flow_id = ? AND type IN ('start', 'core.start')`,
+    )
     .get(opts.flowId) as FlowNodeRow | undefined;
   const endNode = getDb()
-    .prepare(`SELECT * FROM flow_nodes WHERE flow_id = ? AND type = 'end'`)
+    .prepare(
+      `SELECT * FROM flow_nodes
+       WHERE flow_id = ? AND type IN ('end', 'core.end')`,
+    )
     .get(opts.flowId) as FlowNodeRow | undefined;
   if (!startNode || !endNode) return;
 
@@ -854,18 +1323,23 @@ function touchFlow(flowId: string, updatedAt: number) {
     .run(updatedAt, flowId);
 }
 
+function captureFlowGraphSnapshot(
+  flowId: string,
+  capturedAt: number,
+): FlowRunGraphSnapshot | null {
+  const graph = getFlowWithGraph(flowId);
+  if (!graph) return null;
+  return {
+    version: 1,
+    capturedAt,
+    flow: graph.flow,
+    nodes: graph.nodes,
+    edges: graph.edges,
+  };
+}
+
 function normalizeNodeType(type: string): FlowNodeType {
-  if (
-    type === "start" ||
-    type === "agent" ||
-    type === "prompt" ||
-    type === "transform" ||
-    type === "condition" ||
-    type === "end"
-  ) {
-    return type;
-  }
-  return "prompt";
+  return getFlowNodeDefinition(type) ? type : "prompt";
 }
 
 function normalizeRunStatus(status: string): FlowRunStatus {
@@ -875,6 +1349,7 @@ function normalizeRunStatus(status: string): FlowRunStatus {
     status === "succeeded" ||
     status === "failed" ||
     status === "cancelled" ||
+    status === "waiting_for_approval" ||
     status === "skipped"
   ) {
     return status;
@@ -882,56 +1357,64 @@ function normalizeRunStatus(status: string): FlowRunStatus {
   return "failed";
 }
 
-function defaultNodeTitle(type: FlowNodeType): string {
-  switch (type) {
-    case "start":
-      return "Start";
-    case "agent":
-      return "Agent";
-    case "prompt":
-      return "Prompt";
-    case "transform":
-      return "Transform";
-    case "condition":
-      return "Condition";
-    case "end":
-      return "End";
+function normalizeArtifactKind(kind: string): FlowArtifactKind {
+  if (
+    kind === "json" ||
+    kind === "markdown" ||
+    kind === "text" ||
+    kind === "image" ||
+    kind === "html" ||
+    kind === "patch" ||
+    kind === "log"
+  ) {
+    return kind;
+  }
+  return "json";
+}
+
+function normalizeFlowItemStatus(status: string): FlowItemStatus {
+  if (
+    status === "discovered" ||
+    status === "queued" ||
+    status === "running" ||
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "skipped_duplicate" ||
+    status === "skipped_low_value" ||
+    status === "waiting_for_approval" ||
+    status === "applied" ||
+    status === "skipped"
+  ) {
+    return status;
+  }
+  return "discovered";
+}
+
+function defaultArtifactTitle(kind: FlowArtifactKind): string {
+  switch (kind) {
+    case "json":
+      return "JSON artifact";
+    case "markdown":
+      return "Markdown artifact";
+    case "text":
+      return "Text artifact";
+    case "image":
+      return "Image artifact";
+    case "html":
+      return "HTML artifact";
+    case "patch":
+      return "Patch artifact";
+    case "log":
+      return "Log artifact";
   }
 }
 
+function defaultNodeTitle(type: FlowNodeType): string {
+  return getDefaultFlowNodeTitle(type);
+}
+
 function defaultNodeConfig(type: FlowNodeType): unknown {
-  if (type === "agent" || type === "prompt") {
-    return {
-      prompt: "Use the workspace tools when needed, then return the next JSON object.",
-      outputSchema: {
-        type: "object",
-        additionalProperties: true,
-      },
-      retry: {
-        maxAttempts: 3,
-      },
-      timeoutMs: 60_000,
-      permissionMode: "bypassPermissions",
-    };
-  }
-  if (type === "condition") {
-    return {
-      condition: {
-        path: "$.ok",
-        equals: true,
-      },
-    };
-  }
-  if (type === "start") {
-    return { input: {} };
-  }
-  if (type === "transform") {
-    return {
-      inputMapping: {},
-      outputPath: "$",
-    };
-  }
-  return {};
+  return getDefaultFlowNodeConfig(type);
 }
 
 function parseJson(value: string, fallback: unknown): unknown {

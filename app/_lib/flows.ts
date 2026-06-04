@@ -1,13 +1,8 @@
 import type { WorkspaceOption } from "./chat-session";
 import type { UIMessage } from "ai";
 
-export type FlowNodeType =
-  | "start"
-  | "agent"
-  | "prompt"
-  | "transform"
-  | "condition"
-  | "end";
+export type FlowNodeType = string;
+export type FlowTemplateId = "juejin-frontend-document-intake";
 
 export type FlowDefinition = {
   id: string;
@@ -47,6 +42,7 @@ export type FlowRunStatus =
   | "succeeded"
   | "failed"
   | "cancelled"
+  | "waiting_for_approval"
   | "skipped";
 
 export type FlowRun = {
@@ -55,6 +51,7 @@ export type FlowRun = {
   status: FlowRunStatus;
   input: unknown;
   output: unknown | null;
+  graphSnapshot: FlowRunGraphSnapshot | null;
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
@@ -80,9 +77,75 @@ export type FlowGraph = {
   edges: FlowEdge[];
 };
 
+export type FlowRunGraphSnapshot = FlowGraph & {
+  version: 1;
+  capturedAt: number;
+};
+
 export type FlowRunWithNodes = {
   run: FlowRun;
   nodeRuns: FlowNodeRun[];
+  artifacts: FlowArtifact[];
+  items: FlowItem[];
+};
+
+export type FlowRunEvent = {
+  id: string;
+  flowRunId: string;
+  nodeRunId: string | null;
+  sequence: number;
+  type: string;
+  payload: unknown;
+  createdAt: number;
+};
+
+export type FlowArtifactKind =
+  | "json"
+  | "markdown"
+  | "text"
+  | "image"
+  | "html"
+  | "patch"
+  | "log";
+
+export type FlowArtifact = {
+  id: string;
+  flowRunId: string;
+  nodeRunId: string | null;
+  itemId: string | null;
+  kind: FlowArtifactKind;
+  title: string;
+  path: string | null;
+  mediaType: string | null;
+  metadata: unknown;
+  createdAt: number;
+};
+
+export type FlowItemStatus =
+  | "discovered"
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped_duplicate"
+  | "skipped_low_value"
+  | "waiting_for_approval"
+  | "applied"
+  | "skipped";
+
+export type FlowItem = {
+  id: string;
+  flowRunId: string;
+  nodeRunId: string | null;
+  externalId: string | null;
+  status: FlowItemStatus;
+  title: string;
+  input: unknown;
+  output: unknown | null;
+  metadata: unknown;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export async function fetchFlows(): Promise<FlowDefinition[]> {
@@ -105,6 +168,27 @@ export async function createFlowOnApi(params: {
     body: JSON.stringify({
       title: params.title,
       description: params.description ?? null,
+      workspaceRoot: params.workspace.root,
+      workspaceName: params.workspace.name,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return (await response.json()) as FlowGraph;
+}
+
+export async function createFlowFromTemplateOnApi(params: {
+  templateId: FlowTemplateId;
+  title?: string;
+  workspace: WorkspaceOption;
+}): Promise<FlowGraph> {
+  const response = await fetch("/api/flows/templates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      templateId: params.templateId,
+      title: params.title ?? null,
       workspaceRoot: params.workspace.root,
       workspaceName: params.workspace.name,
     }),
@@ -338,6 +422,47 @@ export async function fetchFlowRunDetail(params: {
   );
   if (!response.ok) {
     throw new Error("Failed to load flow run.");
+  }
+  return (await response.json()) as FlowRunWithNodes;
+}
+
+export async function fetchFlowRunEvents(params: {
+  flowId: string;
+  runId: string;
+}): Promise<FlowRunEvent[]> {
+  const response = await fetch(
+    `/api/flows/${encodeURIComponent(params.flowId)}/runs/${encodeURIComponent(
+      params.runId,
+    )}/events`,
+  );
+  if (!response.ok) {
+    throw new Error("Failed to load flow run events.");
+  }
+  const data = (await response.json()) as { events?: FlowRunEvent[] };
+  return data.events ?? [];
+}
+
+export async function resumeFlowRunOnApi(params: {
+  flowId: string;
+  runId: string;
+  decision: "approved" | "rejected";
+  response?: unknown;
+}): Promise<FlowRunWithNodes> {
+  const response = await fetch(
+    `/api/flows/${encodeURIComponent(params.flowId)}/runs/${encodeURIComponent(
+      params.runId,
+    )}/resume`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        decision: params.decision,
+        response: params.response ?? null,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await response.text());
   }
   return (await response.json()) as FlowRunWithNodes;
 }

@@ -2,15 +2,7 @@ import {
   createFlowNode,
   type FlowNodeType,
 } from "@/lib/persistence";
-
-const NODE_TYPES = new Set([
-  "start",
-  "agent",
-  "prompt",
-  "transform",
-  "condition",
-  "end",
-]);
+import { isRegisteredFlowNodeType } from "@/lib/flows/node-registry";
 
 export async function POST(
   request: Request,
@@ -24,7 +16,7 @@ export async function POST(
     config?: unknown;
   };
   const type =
-    typeof body.type === "string" && NODE_TYPES.has(body.type)
+    typeof body.type === "string" && isRegisteredFlowNodeType(body.type)
       ? (body.type as FlowNodeType)
       : "prompt";
   const position = normalizePosition(body.position);

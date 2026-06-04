@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
 import { generateImage } from "ai";
@@ -23,7 +24,9 @@ const imageGenerationInputSchema = z.object({
   fileName: z
     .string()
     .optional()
-    .describe("Optional file name without path separators."),
+    .describe(
+      "Optional file name without path separators. Omit it to generate a unique hash file name automatically.",
+    ),
   size: z
     .string()
     .optional()
@@ -56,7 +59,8 @@ export const imageGenerationTool = approvedTool({
       });
       const image = result.image;
       const extension = extensionForMediaType(image.mediaType);
-      const safeName = sanitizeFileName(fileName) ?? `${Date.now()}${extension}`;
+      const safeName =
+        sanitizeFileName(fileName) ?? buildHashedFileName(prompt, extension);
       const relativeDir = outputDir?.trim() || ".flow-artifacts/images";
       const relativePath = path.posix.join(relativeDir, safeName);
       const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
@@ -90,6 +94,18 @@ function sanitizeFileName(fileName: string | undefined): string | null {
   if (!trimmed) return null;
   const baseName = path.basename(trimmed).replace(/[^a-zA-Z0-9._-]/g, "-");
   return baseName || null;
+}
+
+function buildHashedFileName(prompt: string, extension: string): string {
+  const hash = createHash("sha256")
+    .update(prompt)
+    .update("\n")
+    .update(String(Date.now()))
+    .update("\n")
+    .update(randomUUID())
+    .digest("hex")
+    .slice(0, 16);
+  return `image-${hash}${extension}`;
 }
 
 function normalizeImageSize(

@@ -50,6 +50,9 @@ tmp
 # local SQLite store for persisted chat messages (P3-b)
 /.data/
 
+# generated Flow runtime outputs
+.flow-artifacts/
+
 # Playwright
 /test-results/
 /playwright-report/

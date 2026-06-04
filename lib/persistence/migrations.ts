@@ -127,6 +127,68 @@ const CHAT_RUNS_SQL = `
     ON chat_runs(status);
 `;
 
+const FLOW_RUN_EVENTS_SQL = `
+  CREATE TABLE IF NOT EXISTS flow_run_events (
+    id           TEXT PRIMARY KEY,
+    flow_run_id  TEXT NOT NULL,
+    node_run_id  TEXT,
+    sequence     INTEGER NOT NULL,
+    type         TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_run_events_run_sequence
+    ON flow_run_events(flow_run_id, sequence);
+  CREATE INDEX IF NOT EXISTS idx_flow_run_events_node
+    ON flow_run_events(node_run_id, sequence);
+`;
+
+const FLOW_ARTIFACTS_SQL = `
+  CREATE TABLE IF NOT EXISTS flow_artifacts (
+    id            TEXT PRIMARY KEY,
+    flow_run_id   TEXT NOT NULL,
+    node_run_id   TEXT,
+    item_id       TEXT,
+    kind          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    path          TEXT,
+    media_type    TEXT,
+    metadata_json TEXT NOT NULL,
+    created_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_artifacts_run
+    ON flow_artifacts(flow_run_id, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_flow_artifacts_node
+    ON flow_artifacts(node_run_id, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_flow_artifacts_item
+    ON flow_artifacts(item_id, created_at ASC);
+`;
+
+const FLOW_ITEMS_SQL = `
+  CREATE TABLE IF NOT EXISTS flow_items (
+    id            TEXT PRIMARY KEY,
+    flow_run_id   TEXT NOT NULL,
+    node_run_id   TEXT,
+    external_id   TEXT,
+    status        TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    input_json    TEXT NOT NULL,
+    output_json   TEXT,
+    metadata_json TEXT NOT NULL,
+    error         TEXT,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_items_run
+    ON flow_items(flow_run_id, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_flow_items_node
+    ON flow_items(node_run_id, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_flow_items_status
+    ON flow_items(flow_run_id, status);
+  CREATE INDEX IF NOT EXISTS idx_flow_items_external
+    ON flow_items(flow_run_id, external_id);
+`;
+
 /**
  * 历史 migrations。**只追加，不修改**。
  *
@@ -258,6 +320,24 @@ const MIGRATIONS: Migration[] = [
     name: "add-chat-run-records",
     sql: CHAT_RUNS_SQL,
   },
+  {
+    version: 10,
+    name: "add-flow-run-events",
+    sql: `
+      ALTER TABLE flow_runs ADD COLUMN graph_snapshot_json TEXT;
+      ${FLOW_RUN_EVENTS_SQL}
+    `,
+  },
+  {
+    version: 11,
+    name: "add-flow-artifacts",
+    sql: FLOW_ARTIFACTS_SQL,
+  },
+  {
+    version: 12,
+    name: "add-flow-items",
+    sql: FLOW_ITEMS_SQL,
+  },
 ];
 
 /** 启动时跑：把 user_version 推到 latest，途中遇到失败抛错。 */
@@ -304,7 +384,11 @@ function ensureSchemaInvariants(db: DatabaseType): void {
   db.exec(THREAD_ACTIVE_CONTEXT_SQL);
   db.exec(FLOWS_SQL);
   db.exec(CHAT_RUNS_SQL);
+  db.exec(FLOW_RUN_EVENTS_SQL);
+  db.exec(FLOW_ARTIFACTS_SQL);
+  db.exec(FLOW_ITEMS_SQL);
   ensureColumn(db, "flow_node_runs", "trace_json", "TEXT");
+  ensureColumn(db, "flow_runs", "graph_snapshot_json", "TEXT");
 }
 
 function ensureColumn(
